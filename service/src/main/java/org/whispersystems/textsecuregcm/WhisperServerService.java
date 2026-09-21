@@ -111,6 +111,8 @@ import org.whispersystems.textsecuregcm.captcha.CaptchaChecker;
 import org.whispersystems.textsecuregcm.captcha.CaptchaClient;
 import org.whispersystems.textsecuregcm.captcha.RegistrationCaptchaManager;
 import org.whispersystems.textsecuregcm.captcha.ShortCodeExpander;
+import org.whispersystems.textsecuregcm.captcha.TurnstileCaptchaClient;
+import org.whispersystems.textsecuregcm.configuration.TurnstileCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.BadgeConfiguration;
 import org.whispersystems.textsecuregcm.configuration.FoundationDbExternalClientConfiguration;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
@@ -1066,8 +1068,19 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     final Function<String, CaptchaClient> captchaClientSupplier = spamFilter
         .map(SpamFilter::getCaptchaClientSupplier)
         .orElseGet(() -> {
-          log.warn("No captcha clients found; using default (no-op) client as default");
-          return ignored -> CaptchaClient.noop();
+          // Tellomi: Cloudflare Turnstile when configured; otherwise upstream's no-op
+          final TurnstileCaptchaConfiguration turnstileConfig = config.getTurnstileCaptchaConfiguration();
+          if (turnstileConfig == null) {
+            log.warn("No captcha clients found; using default (no-op) client as default");
+            return ignored -> CaptchaClient.noop();
+          }
+          final CaptchaClient turnstileCaptchaClient = new TurnstileCaptchaClient(turnstileConfig);
+          log.info("Tellomi: Turnstile captcha client enabled (allowNoop={})", turnstileConfig.allowNoop());
+          return scheme -> switch (scheme) {
+            case TurnstileCaptchaClient.SCHEME -> turnstileCaptchaClient;
+            case "noop" -> turnstileConfig.allowNoop() ? CaptchaClient.noop() : null;
+            default -> null;
+          };
         });
 
     spamFilter.map(SpamFilter::getReportedMessageListener).ifPresent(reportMessageManager::addListener);
