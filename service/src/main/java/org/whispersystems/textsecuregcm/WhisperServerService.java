@@ -234,6 +234,10 @@ import org.whispersystems.textsecuregcm.metrics.TrafficSource;
 import org.whispersystems.textsecuregcm.providers.MultiRecipientMessageProvider;
 import org.whispersystems.textsecuregcm.push.APNSender;
 import org.whispersystems.textsecuregcm.push.FcmSender;
+import org.whispersystems.textsecuregcm.push.vendor.HuaweiPushSender;
+import org.whispersystems.textsecuregcm.push.vendor.VendorPushSenders;
+import org.whispersystems.textsecuregcm.push.vendor.XiaomiPushSender;
+import org.whispersystems.textsecuregcm.configuration.VendorPushConfiguration;
 import org.whispersystems.textsecuregcm.push.MessageSender;
 import org.whispersystems.textsecuregcm.push.ProvisioningManager;
 import org.whispersystems.textsecuregcm.push.PushNotificationManager;
@@ -832,10 +836,20 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     RemoteConfigsManager remoteConfigsManager = new RemoteConfigsManager(remoteConfigs, config.getRemoteConfigConfiguration().globalConfig());
     APNSender apnSender = new APNSender(apnSenderExecutor, Clock.systemUTC(), config.getApnConfiguration());
     FcmSender fcmSender = new FcmSender(fcmSenderExecutor, config.getFcmConfiguration().credentials().value());
+    // Tellomi: 厂商推送（小米 / 华为，#941）；没配置的厂商 = 该类 token 视为未注册
+    final VendorPushConfiguration vendorPushConfiguration = config.getVendorPushConfiguration();
+    final VendorPushSenders vendorPushSenders = new VendorPushSenders(
+        vendorPushConfiguration.xiaomi() != null && vendorPushConfiguration.xiaomi().enabled()
+            ? new XiaomiPushSender(fcmSenderExecutor, vendorPushConfiguration.xiaomi().appSecret().value(), vendorPushConfiguration.xiaomi().packageName())
+            : null,
+        vendorPushConfiguration.huawei() != null && vendorPushConfiguration.huawei().enabled()
+            ? new HuaweiPushSender(fcmSenderExecutor, vendorPushConfiguration.huawei().appId(), vendorPushConfiguration.huawei().clientSecret().value())
+            : null);
     PushNotificationScheduler pushNotificationScheduler = new PushNotificationScheduler(pushSchedulerCluster,
         apnSender, fcmSender, accountsManager, 0, 0, retryExecutor);
+    pushNotificationScheduler.setVendorPushSenders(vendorPushSenders);
     PushNotificationManager pushNotificationManager =
-        new PushNotificationManager(accountsManager, apnSender, fcmSender, pushNotificationScheduler);
+        new PushNotificationManager(accountsManager, apnSender, fcmSender, vendorPushSenders, pushNotificationScheduler);
     RateLimiters rateLimiters = RateLimiters.create(dynamicConfigurationManager, rateLimitersCluster, retryExecutor);
     ProvisioningManager provisioningManager = new ProvisioningManager(pubsubClient);
     IssuedReceiptsManager issuedReceiptsManager = new IssuedReceiptsManager(

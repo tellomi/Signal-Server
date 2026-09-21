@@ -34,6 +34,7 @@ import org.whispersystems.textsecuregcm.redis.ClusterLuaScript;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClusterClient;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
+import org.whispersystems.textsecuregcm.push.vendor.VendorPushSenders;
 import org.whispersystems.textsecuregcm.storage.Device;
 import org.whispersystems.textsecuregcm.util.ResilienceUtil;
 import org.whispersystems.textsecuregcm.util.Pair;
@@ -47,6 +48,8 @@ public class PushNotificationScheduler implements Managed {
 
   private static final String PENDING_BACKGROUND_APN_NOTIFICATIONS_KEY_PREFIX = "PENDING_BACKGROUND_APN";
   private static final String PENDING_BACKGROUND_FCM_NOTIFICATIONS_KEY_PREFIX = "PENDING_BACKGROUND_FCM";
+  private static final String PENDING_BACKGROUND_XIAOMI_NOTIFICATIONS_KEY_PREFIX = "PENDING_BACKGROUND_XIAOMI";
+  private static final String PENDING_BACKGROUND_HUAWEI_NOTIFICATIONS_KEY_PREFIX = "PENDING_BACKGROUND_HUAWEI";
   private static final String LAST_BACKGROUND_NOTIFICATION_TIMESTAMP_KEY_PREFIX = "LAST_BACKGROUND_NOTIFICATION";
   private static final String PENDING_DELAYED_NOTIFICATIONS_KEY_PREFIX = "DELAYED";
 
@@ -65,6 +68,12 @@ public class PushNotificationScheduler implements Managed {
 
   private final APNSender apnSender;
   private final FcmSender fcmSender;
+  private VendorPushSenders vendorPushSenders = VendorPushSenders.none();
+
+  /** Tellomi: 厂商推送发送器（可选）。 */
+  public void setVendorPushSenders(final VendorPushSenders vendorPushSenders) {
+    this.vendorPushSenders = vendorPushSenders;
+  }
   private final AccountsManager accountsManager;
   private final FaultTolerantRedisClusterClient pushSchedulingCluster;
   private final ScheduledExecutorService retryExecutor;
@@ -115,6 +124,8 @@ public class PushNotificationScheduler implements Managed {
 
       return processScheduledBackgroundNotifications(PushNotification.TokenType.APN, slot)
           + processScheduledBackgroundNotifications(PushNotification.TokenType.FCM, slot)
+          + processScheduledBackgroundNotifications(PushNotification.TokenType.XIAOMI, slot)
+          + processScheduledBackgroundNotifications(PushNotification.TokenType.HUAWEI, slot)
           + processScheduledDelayedNotifications(slot);
     }
 
@@ -304,7 +315,11 @@ public class PushNotificationScheduler implements Managed {
     final PushNotificationSender sender = switch (tokenType) {
       case FCM -> fcmSender;
       case APN -> apnSender;
+      case XIAOMI, HUAWEI -> vendorPushSenders.forType(tokenType).orElse(null);
     };
+    if (sender == null) {
+      return CompletableFuture.completedFuture(null);   // Tellomi: 该厂商通道没配置，静默跳过
+    }
 
     // It's okay for the "last notification" timestamp to expire after the "cooldown" period has elapsed; a missing
     // timestamp and a timestamp older than the period are functionally equivalent.
@@ -388,6 +403,8 @@ public class PushNotificationScheduler implements Managed {
     final String prefix = switch (tokenType) {
       case APN -> PENDING_BACKGROUND_APN_NOTIFICATIONS_KEY_PREFIX;
       case FCM -> PENDING_BACKGROUND_FCM_NOTIFICATIONS_KEY_PREFIX;
+      case XIAOMI -> PENDING_BACKGROUND_XIAOMI_NOTIFICATIONS_KEY_PREFIX;
+      case HUAWEI -> PENDING_BACKGROUND_HUAWEI_NOTIFICATIONS_KEY_PREFIX;
     };
     return prefix + "::{" + RedisClusterUtil.getMinimalHashTag(slot) + "}";
   }
@@ -443,7 +460,7 @@ public class PushNotificationScheduler implements Managed {
 
   private static String getPushToken(final PushNotification.TokenType tokenType, final Device device) {
     return switch (tokenType) {
-      case FCM -> device.getGcmId();
+      case FCM, XIAOMI, HUAWEI -> device.getGcmId();
       case APN -> device.getApnId();
     };
   }
