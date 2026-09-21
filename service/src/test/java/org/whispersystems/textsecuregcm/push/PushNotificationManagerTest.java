@@ -179,7 +179,7 @@ class PushNotificationManagerTest {
 
   @CartesianTest
   void testSendOrScheduleNotification(
-      @CartesianTest.Enum(PushNotification.TokenType.class) PushNotification.TokenType tokenType,
+      @CartesianTest.Enum(value = PushNotification.TokenType.class, names = {"FCM", "APN"}) PushNotification.TokenType tokenType,
       @CartesianTest.Values(booleans = {false, true}) final boolean urgent) {
 
     final boolean expectSchedule = !urgent;
@@ -198,6 +198,7 @@ class PushNotificationManagerTest {
     final PushNotificationSender sender = switch (tokenType) {
       case FCM -> fcmSender;
       case APN -> apnSender;
+      case XIAOMI, HUAWEI -> throw new IllegalArgumentException("vendor types not part of this test");
     };
     when(sender.sendNotification(pushNotification))
         .thenReturn(CompletableFuture.completedFuture(new SendPushNotificationResult(true, Optional.empty(), false, Optional.empty())));

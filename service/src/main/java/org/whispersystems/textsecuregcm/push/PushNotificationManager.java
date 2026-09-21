@@ -21,6 +21,8 @@ import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.identity.IdentityType;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
+import org.whispersystems.textsecuregcm.push.vendor.VendorPushSenders;
+import org.whispersystems.textsecuregcm.push.vendor.VendorPushToken;
 import org.whispersystems.textsecuregcm.storage.Device;
 import org.whispersystems.textsecuregcm.util.Pair;
 
@@ -29,6 +31,7 @@ public class PushNotificationManager {
   private final AccountsManager accountsManager;
   private final APNSender apnSender;
   private final FcmSender fcmSender;
+  private final VendorPushSenders vendorPushSenders;
   private final PushNotificationScheduler pushNotificationScheduler;
 
   private static final Duration VERIFICATION_CODE_TTL = Duration.ofMinutes(10);
@@ -43,7 +46,16 @@ public class PushNotificationManager {
       final APNSender apnSender,
       final FcmSender fcmSender,
       final PushNotificationScheduler pushNotificationScheduler) {
+    this(accountsManager, apnSender, fcmSender, VendorPushSenders.none(), pushNotificationScheduler);
+  }
 
+  public PushNotificationManager(final AccountsManager accountsManager,
+      final APNSender apnSender,
+      final FcmSender fcmSender,
+      final VendorPushSenders vendorPushSenders,
+      final PushNotificationScheduler pushNotificationScheduler) {
+
+    this.vendorPushSenders = vendorPushSenders;
     this.accountsManager = accountsManager;
     this.apnSender = apnSender;
     this.fcmSender = fcmSender;
@@ -111,7 +123,12 @@ public class PushNotificationManager {
     final Pair<String, PushNotification.TokenType> tokenAndType;
 
     if (StringUtils.isNotBlank(device.getGcmId())) {
-      tokenAndType = new Pair<>(device.getGcmId(), PushNotification.TokenType.FCM);
+      // Tellomi: 厂商推送 token 也住在 gcmId 槽里，按前缀分流；该厂商没配置就当没注册（走 websocket 常驻）
+      final PushNotification.TokenType type = VendorPushToken.tokenType(device.getGcmId()).orElse(PushNotification.TokenType.FCM);
+      if (VendorPushToken.isVendor(type) && vendorPushSenders.forType(type).isEmpty()) {
+        throw new NotPushRegisteredException();
+      }
+      tokenAndType = new Pair<>(device.getGcmId(), type);
     } else if (StringUtils.isNotBlank(device.getApnId())) {
       tokenAndType = new Pair<>(device.getApnId(), PushNotification.TokenType.APN);
     } else {
@@ -136,6 +153,8 @@ public class PushNotificationManager {
     final PushNotificationSender sender = switch (pushNotification.tokenType()) {
       case FCM -> fcmSender;
       case APN -> apnSender;
+      case XIAOMI, HUAWEI -> vendorPushSenders.forType(pushNotification.tokenType())
+          .orElseThrow(() -> new IllegalStateException("vendor push not configured: " + pushNotification.tokenType()));
     };
 
     return sender.sendNotification(pushNotification).whenComplete((result, throwable) -> {
@@ -221,7 +240,7 @@ public class PushNotificationManager {
               // Don't clear the token if it's already changed
               if (originalToken.equals(getPushToken(d, tokenType))) {
                 switch (tokenType) {
-                  case FCM -> d.setGcmId(null);
+                  case FCM, XIAOMI, HUAWEI -> d.setGcmId(null);
                   case APN -> d.setApnId(null);
                 }
               }
@@ -230,7 +249,7 @@ public class PushNotificationManager {
 
   private static String getPushToken(final Device device, final PushNotification.TokenType tokenType) {
     return switch (tokenType) {
-      case FCM -> device.getGcmId();
+      case FCM, XIAOMI, HUAWEI -> device.getGcmId();
       case APN -> device.getApnId();
     };
   }
