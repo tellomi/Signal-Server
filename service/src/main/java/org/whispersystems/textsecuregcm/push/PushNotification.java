@@ -35,7 +35,9 @@ public record PushNotification(String deviceToken,
 
   public enum TokenType {
     FCM,
-    APN
+    APN,
+    XIAOMI,   // Tellomi: 小米推送（token 存在 gcmId 槽，前缀 xiaomi:）
+    HUAWEI    // Tellomi: 华为推送（前缀 huawei:）
   }
 
   public PushNotification {

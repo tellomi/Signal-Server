@@ -93,7 +93,7 @@ class PushNotificationSchedulerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(PushNotification.TokenType.class)
+  @EnumSource(value = PushNotification.TokenType.class, names = {"FCM", "APN"})
   void testScheduleBackgroundNotificationWithNoRecentApnsNotification(PushNotification.TokenType tokenType) throws ExecutionException, InterruptedException {
     final Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
     clock.pin(now);
@@ -111,7 +111,7 @@ class PushNotificationSchedulerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(PushNotification.TokenType.class)
+  @EnumSource(value = PushNotification.TokenType.class, names = {"FCM", "APN"})
   void testScheduleBackgroundNotificationWithRecentNotification(PushNotification.TokenType tokenType) throws ExecutionException, InterruptedException {
     final Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
     final Instant recentNotificationTimestamp =
@@ -132,7 +132,7 @@ class PushNotificationSchedulerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(PushNotification.TokenType.class)
+  @EnumSource(value = PushNotification.TokenType.class, names = {"FCM", "APN"})
   void testCancelBackgroundApnsNotifications(PushNotification.TokenType tokenType) {
     final Instant now = Instant.now().truncatedTo(ChronoUnit.MILLIS);
     clock.pin(now);
@@ -148,7 +148,7 @@ class PushNotificationSchedulerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(PushNotification.TokenType.class)
+  @EnumSource(value = PushNotification.TokenType.class, names = {"FCM", "APN"})
   void testProcessScheduledBackgroundNotifications(PushNotification.TokenType tokenType) {
     final PushNotificationScheduler.NotificationWorker worker = pushNotificationScheduler.new NotificationWorker(1);
 
@@ -170,6 +170,7 @@ class PushNotificationSchedulerTest {
     verify(switch (tokenType) {
       case FCM -> fcmSender;
       case APN -> apnSender;
+      case XIAOMI, HUAWEI -> throw new IllegalArgumentException("vendor types not part of this test");
     }).sendNotification(notificationCaptor.capture());
 
     final PushNotification pushNotification = notificationCaptor.getValue();
@@ -178,6 +179,7 @@ class PushNotificationSchedulerTest {
     assertEquals(switch (tokenType) {
       case FCM -> GCM_ID;
       case APN -> APN_ID;
+      case XIAOMI, HUAWEI -> throw new IllegalArgumentException("vendor types not part of this test");
     }, pushNotification.deviceToken());
     assertEquals(account, pushNotification.destination());
     assertEquals(device, pushNotification.destinationDevice());
@@ -189,7 +191,7 @@ class PushNotificationSchedulerTest {
   }
 
   @ParameterizedTest
-  @EnumSource(PushNotification.TokenType.class)
+  @EnumSource(value = PushNotification.TokenType.class, names = {"FCM", "APN"})
   void testProcessScheduledBackgroundNotificationsCancelled(PushNotification.TokenType tokenType) throws ExecutionException, InterruptedException {
     final PushNotificationScheduler.NotificationWorker worker = pushNotificationScheduler.new NotificationWorker(1);
 

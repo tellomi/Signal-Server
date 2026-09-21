@@ -35,6 +35,7 @@ import org.whispersystems.textsecuregcm.configuration.ExternalRequestFilterConfi
 import org.whispersystems.textsecuregcm.configuration.FaultTolerantRedisClientFactory;
 import org.whispersystems.textsecuregcm.configuration.FaultTolerantRedisClusterFactory;
 import org.whispersystems.textsecuregcm.configuration.FcmConfiguration;
+import org.whispersystems.textsecuregcm.configuration.VendorPushConfiguration;
 import org.whispersystems.textsecuregcm.configuration.FoundationDbMessagesConfiguration;
 import org.whispersystems.textsecuregcm.configuration.GcpAttachmentsConfiguration;
 import org.whispersystems.textsecuregcm.configuration.GenericZkConfig;
@@ -204,6 +205,9 @@ public class WhisperServerConfiguration extends Configuration {
   @NotNull
   @JsonProperty
   private FcmConfiguration fcm;
+
+  @JsonProperty
+  private VendorPushConfiguration vendorPush;   // Tellomi: 可选
 
   @Valid
   @NotNull
@@ -496,6 +500,10 @@ public class WhisperServerConfiguration extends Configuration {
 
   public FaultTolerantRedisClusterFactory getRateLimitersCluster() {
     return rateLimitersCluster;
+  }
+
+  public VendorPushConfiguration getVendorPushConfiguration() {
+    return vendorPush == null ? VendorPushConfiguration.none() : vendorPush;
   }
 
   public FcmConfiguration getFcmConfiguration() {
