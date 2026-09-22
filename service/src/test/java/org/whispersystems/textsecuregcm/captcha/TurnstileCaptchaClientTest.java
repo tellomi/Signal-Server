@@ -44,7 +44,7 @@ class TurnstileCaptchaClientTest {
     server.start();
 
     final TurnstileCaptchaConfiguration configuration = new TurnstileCaptchaConfiguration(SITE_KEY,
-        new SecretString("secret-key"), "http://127.0.0.1:" + server.getAddress().getPort() + "/siteverify", false);
+        new SecretString("secret-key"), "http://127.0.0.1:" + server.getAddress().getPort() + "/siteverify", false, null);
     client = new TurnstileCaptchaClient(configuration, HttpClient.newHttpClient());
   }
 
@@ -86,5 +86,14 @@ class TurnstileCaptchaClientTest {
     nextStatus.set(502);
     assertThrows(IOException.class,
         () -> client.verify(Optional.empty(), SITE_KEY, Action.REGISTRATION, "tok", "1.2.3.4", null));
+  }
+
+  @Test
+  void secretNoopAcceptsOnlyTheSharedSecret() throws IOException {
+    final CaptchaClient noop = CaptchaClient.secretNoop("s3cret");
+    assertThat(noop.scheme()).isEqualTo("noop");
+    assertThat(noop.verify(Optional.empty(), "noop", Action.REGISTRATION, "s3cret", "1.2.3.4", null).isValid()).isTrue();
+    assertThat(noop.verify(Optional.empty(), "noop", Action.REGISTRATION, "noop", "1.2.3.4", null).isValid()).isFalse();
+    assertThat(noop.verify(Optional.empty(), "noop", Action.REGISTRATION, "", "1.2.3.4", null).isValid()).isFalse();
   }
 }

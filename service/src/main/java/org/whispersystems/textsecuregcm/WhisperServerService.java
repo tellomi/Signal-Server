@@ -1089,10 +1089,19 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
             return ignored -> CaptchaClient.noop();
           }
           final CaptchaClient turnstileCaptchaClient = new TurnstileCaptchaClient(turnstileConfig);
-          log.info("Tellomi: Turnstile captcha client enabled (allowNoop={})", turnstileConfig.allowNoop());
+          final CaptchaClient noopClient;
+          if (turnstileConfig.allowNoop()) {
+            noopClient = CaptchaClient.noop();
+          } else if (turnstileConfig.noopSecret() != null) {
+            noopClient = CaptchaClient.secretNoop(turnstileConfig.noopSecret().value());
+          } else {
+            noopClient = null;
+          }
+          log.info("Tellomi: Turnstile captcha client enabled (allowNoop={}, noopSecret={})",
+              turnstileConfig.allowNoop(), turnstileConfig.noopSecret() != null);
           return scheme -> switch (scheme) {
             case TurnstileCaptchaClient.SCHEME -> turnstileCaptchaClient;
-            case "noop" -> turnstileConfig.allowNoop() ? CaptchaClient.noop() : null;
+            case "noop" -> noopClient;
             default -> null;
           };
         });
