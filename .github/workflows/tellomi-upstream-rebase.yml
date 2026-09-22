@@ -50,7 +50,8 @@ jobs:
           BASE=$(git describe --tags --abbrev=0 "$BASE_COMMIT")
           TARGET='${{ inputs.tag }}'
           if [ -z "$TARGET" ]; then
-            TARGET=$(git tag --sort=-creatordate | grep -viE 'beta|rc|hotfix|alpha|nightly' | head -1)
+            # head 提前关管道会让 grep 收 SIGPIPE，pipefail 下整条假红：这一行关掉 pipefail
+            set +o pipefail; TARGET=$(git tag --sort=-creatordate | grep -viE 'beta|rc|hotfix|alpha|nightly' | head -1); set -o pipefail
           fi
           git rev-parse -q --verify "refs/tags/$TARGET" >/dev/null || { echo "::error::tag 不存在：$TARGET"; exit 1; }
           OURS_N=$(git rev-list --count "$BASE_COMMIT..$OURS" --no-merges)
