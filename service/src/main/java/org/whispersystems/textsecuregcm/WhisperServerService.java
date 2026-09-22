@@ -320,6 +320,8 @@ import org.whispersystems.textsecuregcm.util.ManagedAwsCrt;
 import org.whispersystems.textsecuregcm.util.ManagedExecutors;
 import org.whispersystems.textsecuregcm.util.ResilienceUtil;
 import org.whispersystems.textsecuregcm.util.SystemMapper;
+import org.whispersystems.textsecuregcm.configuration.UsernamePolicyConfiguration;
+import org.whispersystems.textsecuregcm.username.UsernameHashDenylist;
 import org.whispersystems.textsecuregcm.util.UsernameHashZkProofVerifier;
 import org.whispersystems.textsecuregcm.util.VirtualExecutorServiceProvider;
 import org.whispersystems.textsecuregcm.util.VirtualThreadPinEventMonitor;
@@ -1314,9 +1316,12 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
 
     final PersistentTimer persistentTimer = new PersistentTimer(rateLimitersCluster, clock);
 
+    // Tellomi: reserved / brand / impersonation usernames (ADR-0062 §5.4). Absent config = upstream behaviour.
+    final UsernameHashDenylist usernameHashDenylist = loadUsernameHashDenylist(config.getUsernamePolicyConfiguration());
+
     final List<Object> commonControllers = Lists.newArrayList(
         new AccountController(accountsManager, rateLimiters, phoneNumberRecoveryPasswordsManager,
-            usernameHashZkProofVerifier),
+            usernameHashZkProofVerifier, usernameHashDenylist),
         new AccountControllerV2(accountsManager, changeNumberManager),
         new AttachmentControllerV4(rateLimiters, gcsAttachmentGenerator, tusAttachmentGenerator,
             experimentEnrollmentManager, config.getAttachments().maxAttachmentUploadSizeInBytes()),
@@ -1474,6 +1479,33 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
 
     public static ScheduledExecutorServiceBuilder of(final Environment environment, final String name) {
       return new ScheduledExecutorServiceBuilder(environment.lifecycle(), name);
+    }
+  }
+
+  /**
+   * Tellomi: load the reserved-username Bloom filter (ADR-0062 §5.4).
+   * <p>
+   * With no configuration the server behaves as upstream does and reserves whatever a client asks for — that is what
+   * the local stack and the tests want. When a filter is configured but cannot be read, {@code required} decides
+   * whether that is fatal: production sets it so a bad deploy fails loudly instead of quietly accepting
+   * {@code admin.01}.
+   */
+  private static UsernameHashDenylist loadUsernameHashDenylist(
+      @Nullable final UsernamePolicyConfiguration config) throws IOException {
+
+    if (config == null) {
+      log.info("No usernamePolicy configured; username reservations are not filtered");
+      return UsernameHashDenylist.empty();
+    }
+    try {
+      return UsernameHashDenylist.load(java.nio.file.Path.of(config.denylistPath()));
+    } catch (final IOException e) {
+      if (config.required()) {
+        throw new IOException("usernamePolicy.required is set but the denylist could not be loaded", e);
+      }
+      log.warn("Could not load the username denylist from {}; reservations will not be filtered",
+          config.denylistPath(), e);
+      return UsernameHashDenylist.empty();
     }
   }
 

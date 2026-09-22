@@ -99,6 +99,7 @@ import org.whispersystems.textsecuregcm.util.MockUtils;
 import org.whispersystems.textsecuregcm.util.SystemMapper;
 import org.whispersystems.textsecuregcm.util.TestRandomUtil;
 import org.whispersystems.textsecuregcm.util.TestRemoteAddressFilterProvider;
+import org.whispersystems.textsecuregcm.username.UsernameHashDenylist;
 import org.whispersystems.textsecuregcm.util.UsernameHashZkProofVerifier;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
 
@@ -161,7 +162,10 @@ class AccountControllerTest {
               accountsManager,
           rateLimiters,
           PHONE_NUMBER_RECOVERY_PASSWORDS_MANAGER,
-          usernameZkProofVerifier
+          usernameZkProofVerifier,
+          // Tellomi: an empty denylist keeps these upstream tests on upstream behaviour; the denylist itself is
+          // covered by UsernameHashDenylistTest.
+          UsernameHashDenylist.empty()
       ))
       .build();
 
