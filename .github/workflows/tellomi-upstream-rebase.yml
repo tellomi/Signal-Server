@@ -122,9 +122,7 @@ jobs:
               echo "::warning::GITHUB_TOKEN 不能开 PR（组织设置），改开 Issue"
               LINK="https://github.com/$GITHUB_REPOSITORY/compare/$OURS...sync/$T?expand=1"
               N=$(gh issue list --search "\"$TITLE\" in:title" --state open --json number --jq '.[0].number')
-              if [ -n "$N" ]; then gh issue comment "$N" --body "分支已更新：$LINK"; else gh issue create --title "$TITLE" --body "分支 \`sync/$T\` 已推好，开 PR：$LINK
-
-$BODY"; fi
+              if [ -n "$N" ]; then gh issue comment "$N" --body "分支已更新：$LINK"; else gh issue create --title "$TITLE" --body "分支 \`sync/$T\` 已推好，开 PR：$LINK"$'\n\n'"$BODY"; fi
             fi
           fi
       - name: 冲突 → 开 / 更新 Issue
