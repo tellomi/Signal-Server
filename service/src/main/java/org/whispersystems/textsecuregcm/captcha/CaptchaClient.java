@@ -45,6 +45,33 @@ public interface CaptchaClient {
       final String ip,
       @Nullable final String userAgent) throws IOException;
 
+  /**
+   * Tellomi: a {@code noop} client that only accepts a shared secret as the token ({@code noop.noop.<action>.<secret>}),
+   * so our own tooling keeps a bypass while the plain {@code noop} token is rejected in production.
+   */
+  static CaptchaClient secretNoop(final String secret) {
+    return new CaptchaClient() {
+      @Override
+      public String scheme() {
+        return "noop";
+      }
+
+      @Override
+      public Set<String> validSiteKeys(final Action action) {
+        return Set.of("noop");
+      }
+
+      @Override
+      public AssessmentResult verify(final Optional<UUID> maybeAci, final String siteKey, final Action action, final String token, final String ip,
+          @Nullable final String userAgent) {
+        return java.security.MessageDigest.isEqual(token.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+            secret.getBytes(java.nio.charset.StandardCharsets.UTF_8))
+            ? AssessmentResult.alwaysValid()
+            : AssessmentResult.invalid();
+      }
+    };
+  }
+
   static CaptchaClient noop() {
     return new CaptchaClient() {
       @Override
