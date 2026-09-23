@@ -31,6 +31,7 @@ import jakarta.ws.rs.core.Response.Status;
 import java.util.Base64;
 import java.util.Collection;
 import java.util.Collections;
+import io.micrometer.core.instrument.Metrics;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -65,6 +66,8 @@ import org.whispersystems.textsecuregcm.storage.PhoneNumberRecoveryPasswordsMana
 import org.whispersystems.textsecuregcm.storage.UsernameHashNotAvailableException;
 import org.whispersystems.textsecuregcm.storage.UsernameReservationNotFoundException;
 import org.whispersystems.textsecuregcm.util.HeaderUtils;
+import org.whispersystems.textsecuregcm.metrics.MetricsUtil;
+import org.whispersystems.textsecuregcm.username.UsernameHashDenylist;
 import org.whispersystems.textsecuregcm.util.UsernameHashZkProofVerifier;
 import org.whispersystems.textsecuregcm.util.Util;
 import software.amazon.awssdk.services.dynamodb.model.TransactWriteItem;
@@ -80,17 +83,24 @@ public class AccountController {
   private final AccountsManager accounts;
   private final RateLimiters rateLimiters;
   private final PhoneNumberRecoveryPasswordsManager phoneNumberRecoveryPasswordsManager;
+  private static final String USERNAME_RESERVATION_DENIED_COUNTER_NAME =
+      MetricsUtil.name(AccountController.class, "usernameReservationDenied");
+
   private final UsernameHashZkProofVerifier usernameHashZkProofVerifier;
+  // Tellomi: reserved / brand / impersonation usernames (ADR-0062). Empty unless configured.
+  private final UsernameHashDenylist usernameHashDenylist;
 
   public AccountController(
       AccountsManager accounts,
       RateLimiters rateLimiters,
       PhoneNumberRecoveryPasswordsManager phoneNumberRecoveryPasswordsManager,
-      UsernameHashZkProofVerifier usernameHashZkProofVerifier) {
+      UsernameHashZkProofVerifier usernameHashZkProofVerifier,
+      UsernameHashDenylist usernameHashDenylist) {
     this.accounts = accounts;
     this.rateLimiters = rateLimiters;
     this.phoneNumberRecoveryPasswordsManager = phoneNumberRecoveryPasswordsManager;
     this.usernameHashZkProofVerifier = usernameHashZkProofVerifier;
+    this.usernameHashDenylist = usernameHashDenylist;
   }
 
   @PUT
@@ -310,9 +320,21 @@ public class AccountController {
       }
     }
 
+    // Tellomi: drop candidates whose hash is on the reserved list before offering them (ADR-0062 §5.4).
+    // A denied candidate is reported exactly like a taken one — 409 with no detail — so the endpoint cannot be used
+    // to enumerate the lexicon.
+    final List<byte[]> candidates = usernameRequest.usernameHashes().stream()
+        .filter(hash -> !usernameHashDenylist.contains(hash))
+        .toList();
+
+    if (candidates.isEmpty()) {
+      Metrics.counter(USERNAME_RESERVATION_DENIED_COUNTER_NAME).increment();
+      throw new WebApplicationException(Status.CONFLICT);
+    }
+
     try {
       final AccountsManager.UsernameReservation reservation =
-          accounts.reserveUsernameHash(auth.accountIdentifier(), usernameRequest.usernameHashes());
+          accounts.reserveUsernameHash(auth.accountIdentifier(), candidates);
 
       return new ReserveUsernameHashResponse(reservation.reservedUsernameHash());
     } catch (final UsernameHashNotAvailableException e) {

@@ -68,6 +68,7 @@ import org.whispersystems.textsecuregcm.configuration.TlsKeyStoreConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TotpConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TurnConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TurnstileCaptchaConfiguration;
+import org.whispersystems.textsecuregcm.configuration.UsernamePolicyConfiguration;
 import org.whispersystems.textsecuregcm.configuration.UnidentifiedDeliveryConfiguration;
 import org.whispersystems.textsecuregcm.configuration.VirtualThreadConfiguration;
 import org.whispersystems.textsecuregcm.configuration.WebAuthnConfiguration;
@@ -313,6 +314,11 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @JsonProperty
   private TurnstileCaptchaConfiguration turnstileCaptcha;
+
+  // Tellomi: optional; absent = no username denylist (upstream behaviour)
+  @Valid
+  @JsonProperty
+  private UsernamePolicyConfiguration usernamePolicy;
 
   @Valid
   @NotNull
@@ -597,6 +603,10 @@ public class WhisperServerConfiguration extends Configuration {
 
   public TurnConfiguration getTurnConfiguration() {
     return turn;
+  }
+
+  public UsernamePolicyConfiguration getUsernamePolicyConfiguration() {
+    return usernamePolicy;
   }
 
   public TurnstileCaptchaConfiguration getTurnstileCaptchaConfiguration() {
