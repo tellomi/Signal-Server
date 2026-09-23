@@ -153,6 +153,11 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
   private final ScheduledExecutorService messagesPollExecutor;
   private final ScheduledExecutorService retryExecutor;
   private final Clock clock;
+
+  /// Tellomi (ADR-0066, TR-ID-01): how long after changing its username an account must wait before changing it again.
+  /// Paired with Accounts#USERNAME_HOLD_DURATION: without it, one account could hold its current name plus three held
+  /// ones just by renaming in a row.
+  public static final Duration USERNAME_CHANGE_COOLDOWN = Duration.ofDays(30);
   private final Duration maxTotpValidationDelay;
 
   private final KeyGenerator totpKeyGenerator;
@@ -1130,6 +1135,8 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
   public UsernameReservation reserveUsernameHash(final UUID accountIdentifier, final List<byte[]> requestedUsernameHashes)
       throws UsernameHashNotAvailableException {
 
+    List<byte[]> candidates = requestedUsernameHashes;
+
     // Always fetch a fresh, non-cached copy of the account before making modifications
     final Account account = accounts.getByAccountIdentifier(accountIdentifier)
         .orElseThrow(() -> new IllegalArgumentException("Account not found: " + accountIdentifier));
@@ -1146,6 +1153,24 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
       return new UsernameReservation(account, account.getUsernameHash().get());
     }
 
+    // Tellomi (ADR-0066, TR-ID-01): 30-day rename cooldown. Taking back one of this account's own held names is always
+    // allowed — it only undoes a change and cannot squat anything. Both public entry points (REST and gRPC) come
+    // through here, so neither can be used to get around it.
+    final Instant now = clock.instant();
+    final Optional<Duration> cooldownLeft = account.getUsernameChangedAt()
+        .map(changedAt -> Duration.between(now, changedAt.plus(USERNAME_CHANGE_COOLDOWN)))
+        .filter(Duration::isPositive);
+    if (cooldownLeft.isPresent()) {
+      candidates = requestedUsernameHashes.stream()
+          .filter(hash -> account.getUsernameHolds().stream().anyMatch(hold ->
+              hold.expirationSecs() > now.getEpochSecond() && Arrays.equals(hold.usernameHash(), hash)))
+          .toList();
+      if (candidates.isEmpty()) {
+        throw new UsernameChangeCooldownException(cooldownLeft.get());
+      }
+    }
+    final List<byte[]> allowedCandidates = candidates;
+
     final AtomicReference<byte[]> reservedUsernameHash = new AtomicReference<>();
 
     redisDelete(account);
@@ -1153,7 +1178,7 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     final Account updatedAccount = updateWithRetries(
         _ -> true,
         a -> reservedUsernameHash.set(
-            checkAndReserveNextUsernameHash(a, new ArrayDeque<>(requestedUsernameHashes))),
+            checkAndReserveNextUsernameHash(a, new ArrayDeque<>(allowedCandidates))),
         () -> accounts.getByAccountIdentifier(account.getAccountIdentifier()).orElseThrow(AccountNotFoundException::new),
         AccountChangeValidator.USERNAME_CHANGE_VALIDATOR);
 

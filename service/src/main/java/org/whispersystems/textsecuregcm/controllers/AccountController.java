@@ -63,6 +63,7 @@ import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
 import org.whispersystems.textsecuregcm.storage.Device;
 import org.whispersystems.textsecuregcm.storage.PhoneNumberRecoveryPasswordsManager;
+import org.whispersystems.textsecuregcm.storage.UsernameChangeCooldownException;
 import org.whispersystems.textsecuregcm.storage.UsernameHashNotAvailableException;
 import org.whispersystems.textsecuregcm.storage.UsernameReservationNotFoundException;
 import org.whispersystems.textsecuregcm.util.HeaderUtils;
@@ -337,6 +338,9 @@ public class AccountController {
           accounts.reserveUsernameHash(auth.accountIdentifier(), candidates);
 
       return new ReserveUsernameHashResponse(reservation.reservedUsernameHash());
+    } catch (final UsernameChangeCooldownException e) {
+      // Tellomi (ADR-0066): answered as a rate limit (429 + Retry-After), so clients can say how long is left.
+      throw new RateLimitExceededException(e.getRetryAfter());
     } catch (final UsernameHashNotAvailableException e) {
       throw new WebApplicationException(Status.CONFLICT);
     }

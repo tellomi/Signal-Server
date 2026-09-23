@@ -162,7 +162,8 @@ public class Accounts {
    * How long an old username is held for an account after the account initially clears/switches the username
    */
   @VisibleForTesting
-  static final Duration USERNAME_HOLD_DURATION = Duration.ofDays(7);
+  // Tellomi (ADR-0066, TR-ID-01): 30 days, not upstream's 7 — paired with the 30-day rename cooldown in AccountsManager.
+  static final Duration USERNAME_HOLD_DURATION = Duration.ofDays(30);
 
   private final Clock clock;
 
@@ -871,6 +872,16 @@ public class Accounts {
     updatedAccount.setUsernameLinkDetails(encryptedUsername == null ? null : linkHandle, encryptedUsername);
 
     final Instant now = clock.instant();
+
+    // Tellomi (ADR-0066, TR-ID-01 「首次设置不计」): start the rename cooldown unless this is the first username the
+    // account has had. "Had" includes live holds, so clearing a name and then setting a new one counts as a change —
+    // otherwise clear + set would be a way around the cooldown.
+    final boolean replacesARecentUsername = maybeOriginalUsernameHash.isPresent()
+        || account.getUsernameHolds().stream().anyMatch(hold -> hold.expirationSecs() > now.getEpochSecond());
+    if (replacesARecentUsername) {
+      updatedAccount.setUsernameChangedAt(now);
+    }
+
     final Optional<byte[]> holdToRemove =
         maybeOriginalUsernameHash.flatMap(hold -> addToHolds(updatedAccount, hold, now));
 
@@ -916,6 +927,7 @@ public class Accounts {
       account.setReservedUsernameHash(null);
       account.setUsernameLinkDetails(updatedAccount.getUsernameLinkHandle(), updatedAccount.getEncryptedUsername().orElse(null));
       account.setUsernameHolds(updatedAccount.getUsernameHolds());
+      account.setUsernameChangedAt(updatedAccount.getUsernameChangedAt().orElse(null));
       account.setVersion(account.getVersion() + 1);
     } catch (final TransactionCanceledException e) {
       if (conditionalCheckFailed(e.cancellationReasons().get(0))) {

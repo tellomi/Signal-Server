@@ -1538,6 +1538,62 @@ class AccountsManagerTest {
     verify(accounts, never()).reserveUsernameHash(any(), any(), any());
   }
 
+  // ── Tellomi: 30-day rename cooldown (ADR-0066, TR-ID-01) ──
+
+  private Account accountThatChangedItsUsername(final Duration ago) {
+    // The change time is stored in whole seconds; pin the clock to one so "time left" is exact.
+    CLOCK.pin(Instant.ofEpochSecond(CLOCK.instant().getEpochSecond()));
+    final Account account = AccountsHelper.generateTestAccount("+18005551234", UUID.randomUUID(), UUID.randomUUID(),
+        new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
+    account.setUsernameHash(TestRandomUtil.nextBytes(32));
+    account.setUsernameChangedAt(CLOCK.instant().minus(ago));
+    when(accounts.getByAccountIdentifier(account.getAccountIdentifier())).thenReturn(Optional.of(account));
+    return account;
+  }
+
+  @Test
+  void tellomiReserveDuringCooldownIsRefusedWithTheTimeLeft() throws Exception {
+    final Account account = accountThatChangedItsUsername(Duration.ofDays(1));
+
+    final UsernameChangeCooldownException e = assertThrows(UsernameChangeCooldownException.class,
+        () -> accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(TestRandomUtil.nextBytes(32))));
+    assertEquals(AccountsManager.USERNAME_CHANGE_COOLDOWN.minus(Duration.ofDays(1)), e.getRetryAfter());
+    verify(accounts, never()).reserveUsernameHash(any(), any(), any());
+  }
+
+  @Test
+  void tellomiReserveAfterTheCooldownIsAllowed() throws UsernameHashNotAvailableException {
+    final Account account =
+        accountThatChangedItsUsername(AccountsManager.USERNAME_CHANGE_COOLDOWN.plusSeconds(1));
+    final byte[] wanted = TestRandomUtil.nextBytes(32);
+
+    assertArrayEquals(wanted, accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(wanted))
+        .reservedUsernameHash());
+  }
+
+  @Test
+  void tellomiTakingBackAHeldNameIsAllowedDuringTheCooldown() throws UsernameHashNotAvailableException {
+    final Account account = accountThatChangedItsUsername(Duration.ofDays(1));
+    final byte[] held = TestRandomUtil.nextBytes(32);
+    account.setUsernameHolds(List.of(new Account.UsernameHold(held, CLOCK.instant().plus(Duration.ofDays(29)).getEpochSecond())));
+
+    // A fresh candidate first: it must be skipped, not reserved, and the held one offered instead.
+    final UsernameReservation result = accountsManager.reserveUsernameHash(account.getAccountIdentifier(),
+        List.of(TestRandomUtil.nextBytes(32), held));
+    assertArrayEquals(held, result.reservedUsernameHash());
+    verify(accounts, times(1)).reserveUsernameHash(eq(account), argThat(hash -> Arrays.equals(hash, held)), any());
+  }
+
+  @Test
+  void tellomiAnExpiredHoldDoesNotOpenTheCooldown() throws Exception {
+    final Account account = accountThatChangedItsUsername(Duration.ofDays(1));
+    final byte[] expired = TestRandomUtil.nextBytes(32);
+    account.setUsernameHolds(List.of(new Account.UsernameHold(expired, CLOCK.instant().minusSeconds(1).getEpochSecond())));
+
+    assertThrows(UsernameChangeCooldownException.class,
+        () -> accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(expired)));
+  }
+
   @Test
   void testReserveUsernameOptimisticLockingFailure() throws UsernameHashNotAvailableException {
     final Account account = AccountsHelper.generateTestAccount("+18005551234", UUID.randomUUID(), UUID.randomUUID(), new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);

@@ -5,6 +5,7 @@
 
 package org.whispersystems.textsecuregcm.storage;
 
+import org.whispersystems.textsecuregcm.util.TestClock;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -54,6 +55,10 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest;
 
 class AccountsManagerUsernameIntegrationTest {
 
+  // Tellomi: one clock for Accounts and AccountsManager, so the rename cooldown (ADR-0066) can be moved past.
+  // Unpinned it follows real time, so upstream's tests see no difference.
+  private final TestClock clock = TestClock.now();
+
   private static final String BASE_64_URL_USERNAME_HASH_1 = "9p6Tip7BFefFOJzv4kv4GyXEYsBVfk_WbjNejdlOvQE";
   private static final String BASE_64_URL_USERNAME_HASH_2 = "NLUom-CHwtemcdvOTTXdmXmzRIV7F05leS8lwkVK_vc";
   private static final String BASE_64_URL_ENCRYPTED_USERNAME_1 = "md1votbj9r794DsqTNrBqA";
@@ -102,7 +107,7 @@ class AccountsManagerUsernameIntegrationTest {
             DynamoDbExtensionSchema.Tables.REPEATED_USE_KEM_SIGNED_PRE_KEYS.tableName()));
 
     accounts = Mockito.spy(new Accounts(
-        Clock.systemUTC(),
+        clock,
         DYNAMO_DB_EXTENSION.getDynamoDbClient(),
         DYNAMO_DB_EXTENSION.getDynamoDbAsyncClient(),
         new RedeemedReceiptsManager(Clock.systemUTC(), Tables.REDEEMED_RECEIPTS.tableName(),
@@ -155,7 +160,7 @@ class AccountsManagerUsernameIntegrationTest {
         phoneNumberRecoveryPasswordsManager,
         Executors.newSingleThreadScheduledExecutor(),
         Executors.newSingleThreadScheduledExecutor(),
-        Clock.systemUTC(),
+        clock,
         "link-device-secret".getBytes(StandardCharsets.UTF_8),
         AccountsManager.TOTP.getTimeStep().dividedBy(2),
         null);
@@ -400,5 +405,72 @@ class AccountsManagerUsernameIntegrationTest {
     final Optional<Account> accountToDeleteLink = accountsManager.getByAccountIdentifier(accountIdentifier);
     accountsManager.update(accountToDeleteLink.orElseThrow().getAccountIdentifier(), a -> a.setUsernameLinkDetails(null, null));
     assertTrue(accounts.getByUsernameLinkHandle(linkHandle).join().isEmpty());
+  }
+
+  // ── Tellomi: 30-day rename cooldown (ADR-0066, TR-ID-01 「改名冷却 30 天，首次设置不计」) ──
+
+  private Account setUsername(Account account, final byte[] usernameHash) throws Exception {
+    accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(usernameHash));
+    return accountsManager.confirmReservedUsernameHash(account.getAccountIdentifier(), usernameHash, ENCRYPTED_USERNAME_1);
+  }
+
+  @Test
+  void firstUsernameThenOneFreeChangeThenCooldown() throws Exception {
+    Account account = AccountsHelper.createAccount(accountsManager, "+18005551111");
+    account = setUsername(account, USERNAME_HASH_1);
+    assertTrue(account.getUsernameChangedAt().isEmpty(), "the first username an account sets does not start the cooldown");
+
+    account = setUsername(account, USERNAME_HASH_2);
+    assertTrue(account.getUsernameChangedAt().isPresent(), "replacing a username starts the cooldown");
+
+    final UUID aci = account.getAccountIdentifier();
+    final UsernameChangeCooldownException e = assertThrows(UsernameChangeCooldownException.class,
+        () -> accountsManager.reserveUsernameHash(aci, List.of(TestRandomUtil.nextBytes(32))));
+    assertTrue(e.getRetryAfter().compareTo(AccountsManager.USERNAME_CHANGE_COOLDOWN.minusMinutes(1)) > 0
+        && e.getRetryAfter().compareTo(AccountsManager.USERNAME_CHANGE_COOLDOWN) <= 0,
+        "Retry-After should be about the whole cooldown, was " + e.getRetryAfter());
+  }
+
+  @Test
+  void takingBackAHeldNameIsAllowedDuringTheCooldown() throws Exception {
+    Account account = AccountsHelper.createAccount(accountsManager, "+18005551111");
+    account = setUsername(account, USERNAME_HASH_1);
+    account = setUsername(account, USERNAME_HASH_2);
+
+    // USERNAME_HASH_1 is now one of this account's holds: undoing the change cannot squat anything.
+    account = setUsername(account, USERNAME_HASH_1);
+    assertArrayEquals(USERNAME_HASH_1, account.getUsernameHash().orElseThrow());
+  }
+
+  @Test
+  void theCooldownEndsAfterThirtyDays() throws Exception {
+    Account account = AccountsHelper.createAccount(accountsManager, "+18005551111");
+    account = setUsername(account, USERNAME_HASH_1);
+    account = setUsername(account, USERNAME_HASH_2);
+
+    clock.pin(clock.instant().plus(AccountsManager.USERNAME_CHANGE_COOLDOWN).plusSeconds(1));
+    try {
+      final byte[] third = TestRandomUtil.nextBytes(32);
+      assertArrayEquals(third,
+          accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(third)).reservedUsernameHash());
+    } finally {
+      clock.unpin();
+    }
+  }
+
+  @Test
+  void clearingThenSettingANewNameCountsAsAChange() throws Exception {
+    Account account = AccountsHelper.createAccount(accountsManager, "+18005551111");
+    account = setUsername(account, USERNAME_HASH_1);
+    account = accountsManager.clearUsernameHash(account.getAccountIdentifier());
+
+    // Not the account's first username any more (USERNAME_HASH_1 is held), so this starts the cooldown …
+    account = setUsername(account, USERNAME_HASH_2);
+    assertTrue(account.getUsernameChangedAt().isPresent());
+
+    // … and clear + set cannot be used to rename again straight away.
+    final UUID aci = account.getAccountIdentifier();
+    assertThrows(UsernameChangeCooldownException.class,
+        () -> accountsManager.reserveUsernameHash(aci, List.of(TestRandomUtil.nextBytes(32))));
   }
 }

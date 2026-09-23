@@ -130,6 +130,7 @@ import org.whispersystems.textsecuregcm.storage.PhoneNumberRecoveryPasswordsMana
 import org.whispersystems.textsecuregcm.storage.TooManyMfaKeysException;
 import org.whispersystems.textsecuregcm.storage.TooManyTotpKeysException;
 import org.whispersystems.textsecuregcm.storage.TotpKey;
+import org.whispersystems.textsecuregcm.storage.UsernameChangeCooldownException;
 import org.whispersystems.textsecuregcm.storage.UsernameHashNotAvailableException;
 import org.whispersystems.textsecuregcm.storage.UsernameReservationNotFoundException;
 import org.whispersystems.textsecuregcm.util.NoStackTraceRuntimeException;
@@ -273,6 +274,9 @@ public class AccountsGrpcService extends SimpleAccountsGrpc.AccountsImplBase {
       return ReserveUsernameHashResponse.newBuilder()
           .setUsernameHash(ByteString.copyFrom(usernameReservation.reservedUsernameHash()))
           .build();
+    } catch (final UsernameChangeCooldownException e) {
+      // Tellomi (ADR-0066): same as the REST endpoint — a rate limit with the time left, not "not available".
+      throw new RateLimitExceededException(e.getRetryAfter());
     } catch (final UsernameHashNotAvailableException e) {
         return ReserveUsernameHashResponse.newBuilder()
             .setUsernameNotAvailable(UsernameNotAvailable.getDefaultInstance())

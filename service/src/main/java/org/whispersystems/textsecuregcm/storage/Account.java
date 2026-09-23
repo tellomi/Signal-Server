@@ -149,6 +149,12 @@ public class Account {
   @JsonProperty("holds")
   private List<UsernameHold> usernameHolds = Collections.emptyList();
 
+  // Tellomi (ADR-0066, TR-ID-01): when this account last *changed* its username, in epoch seconds. Drives the 30-day
+  // rename cooldown in AccountsManager#reserveUsernameHash. Absent for accounts that have only ever set one username.
+  @JsonProperty("tuc")
+  @Nullable
+  private Long usernameChangedAtEpochSeconds;
+
   @JsonProperty("arps")
   @Nullable
   private String accountRecoveryPasswordSalt;
@@ -607,6 +613,15 @@ public class Account {
   public void setUsernameHolds(final List<UsernameHold> usernameHolds) {
     this.requireNotStale();
     this.usernameHolds = usernameHolds;
+  }
+
+  public Optional<Instant> getUsernameChangedAt() {
+    return Optional.ofNullable(usernameChangedAtEpochSeconds).map(Instant::ofEpochSecond);
+  }
+
+  public void setUsernameChangedAt(@Nullable final Instant usernameChangedAt) {
+    this.requireNotStale();
+    this.usernameChangedAtEpochSeconds = usernameChangedAt == null ? null : usernameChangedAt.getEpochSecond();
   }
 
   public Optional<ZkCredentialPublicKey> getZkCredentialKey() {
