@@ -1161,9 +1161,13 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         phoneVerificationTokenManager, registrationLockVerificationManager, rateLimiters,
         changeNumberWaitingPeriodManager, Clock.systemUTC());
 
+    // Tellomi: reserved / brand / impersonation usernames (ADR-0062 §5.4). Absent config = upstream behaviour.
+    // Loaded before the gRPC services: AccountsGrpcService.reserveUsernameHash must filter exactly like the REST endpoint.
+    final UsernameHashDenylist usernameHashDenylist = loadUsernameHashDenylist(config.getUsernamePolicyConfiguration());
+
     final List<ServerServiceDefinition> authenticatedServices = Stream.of(
             new AccountsGrpcService(accountsManager, rateLimiters, usernameHashZkProofVerifier,
-                phoneNumberRecoveryPasswordsManager, Clock.systemUTC(), changeNumberManager),
+                phoneNumberRecoveryPasswordsManager, Clock.systemUTC(), changeNumberManager, usernameHashDenylist),
             new CallingGrpcService(cloudflareTurnCredentialsManager, rateLimiters),
             new CredentialsGrpcService(accountsManager, certificateGenerator, zkAuthOperations, callingGenericZkSecretParams, rateLimiters, Clock.systemUTC(), ExternalServiceDefinitions.createExternalServiceList(config, Clock.systemUTC())),
             new KeysGrpcService(accountsManager, keysManager, rateLimiters),
@@ -1315,9 +1319,6 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     webSocketEnvironment.jersey().register(new TimestampResponseFilter());
 
     final PersistentTimer persistentTimer = new PersistentTimer(rateLimitersCluster, clock);
-
-    // Tellomi: reserved / brand / impersonation usernames (ADR-0062 §5.4). Absent config = upstream behaviour.
-    final UsernameHashDenylist usernameHashDenylist = loadUsernameHashDenylist(config.getUsernamePolicyConfiguration());
 
     final List<Object> commonControllers = Lists.newArrayList(
         new AccountController(accountsManager, rateLimiters, phoneNumberRecoveryPasswordsManager,

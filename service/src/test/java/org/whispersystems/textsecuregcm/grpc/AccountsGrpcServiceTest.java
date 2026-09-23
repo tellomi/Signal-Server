@@ -139,6 +139,7 @@ import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountBadge;
 import org.whispersystems.textsecuregcm.storage.AccountNotFoundException;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
+import org.whispersystems.textsecuregcm.username.UsernameHashDenylist;
 import org.whispersystems.textsecuregcm.storage.AnnotatedMfaKey;
 import org.whispersystems.textsecuregcm.storage.AnnotatedTotpKey;
 import org.whispersystems.textsecuregcm.storage.AnnotatedWebAuthnCredential;
@@ -204,7 +205,65 @@ class AccountsGrpcServiceTest extends SimpleBaseGrpcTest<AccountsGrpcService, Ac
         usernameHashZkProofVerifier,
         phoneNumberRecoveryPasswordsManager,
         testClock,
-        changeNumberManager);
+        changeNumberManager,
+        PARITY_DENYLIST);
+  }
+
+  /**
+   * Tellomi: the same Rust-generated fixture as UsernameHashDenylistTest (term "parityreserved" × 01–99). Every other
+   * test here uses random hashes, which are not on it, so they are unaffected.
+   */
+  private static final UsernameHashDenylist PARITY_DENYLIST = loadParityDenylist();
+
+  private static UsernameHashDenylist loadParityDenylist() {
+    try (var stream = AccountsGrpcServiceTest.class.getResourceAsStream("/username/parity-denylist.bin")) {
+      final java.nio.file.Path tmp = java.nio.file.Files.createTempFile("denylist", ".bin");
+      java.nio.file.Files.write(tmp, stream.readAllBytes());
+      return UsernameHashDenylist.load(tmp);
+    } catch (final Exception e) {
+      throw new AssertionError("the parity fixture must be readable", e);
+    }
+  }
+
+  /** Tellomi: without this the gRPC endpoint would be a way around the REST endpoint's denylist. */
+  @Test
+  void reserveUsernameHashAllDeniedLooksLikeTaken() throws Exception {
+    final ReserveUsernameHashResponse expectedResponse = ReserveUsernameHashResponse.newBuilder()
+        .setUsernameNotAvailable(UsernameNotAvailable.getDefaultInstance())
+        .build();
+
+    assertEquals(expectedResponse,
+        authenticatedServiceStub().reserveUsernameHash(ReserveUsernameHashRequest.newBuilder()
+            .addUsernameHashes(ByteString.copyFrom(new org.signal.libsignal.usernames.Username("parityreserved.01").getHash()))
+            .addUsernameHashes(ByteString.copyFrom(new org.signal.libsignal.usernames.Username("parityreserved.57").getHash()))
+            .build()));
+
+    // Denied candidates never reach storage, so there is no window in which one could be reserved.
+    verify(accountsManager, never()).reserveUsernameHash(any(), any());
+  }
+
+  @Test
+  void reserveUsernameHashOffersOnlyAllowedCandidates() throws Exception {
+    final Account account = mock(Account.class);
+    when(accountsManager.getByAccountIdentifier(AUTHENTICATED_ACI)).thenReturn(Optional.of(account));
+
+    final byte[] denied = new org.signal.libsignal.usernames.Username("parityreserved.01").getHash();
+    final byte[] allowed = new org.signal.libsignal.usernames.Username("parityallowed.01").getHash();
+
+    when(accountsManager.reserveUsernameHash(any(), any()))
+        .thenAnswer(invocation -> {
+          final List<byte[]> usernameHashes = invocation.getArgument(1);
+          return new AccountsManager.UsernameReservation(account, usernameHashes.getFirst());
+        });
+
+    assertEquals(ReserveUsernameHashResponse.newBuilder().setUsernameHash(ByteString.copyFrom(allowed)).build(),
+        authenticatedServiceStub().reserveUsernameHash(ReserveUsernameHashRequest.newBuilder()
+            .addUsernameHashes(ByteString.copyFrom(denied))
+            .addUsernameHashes(ByteString.copyFrom(allowed))
+            .build()));
+
+    verify(accountsManager).reserveUsernameHash(eq(AUTHENTICATED_ACI),
+        argThat(hashes -> hashes.size() == 1 && java.util.Arrays.equals(hashes.getFirst(), allowed)));
   }
 
   @ParameterizedTest
