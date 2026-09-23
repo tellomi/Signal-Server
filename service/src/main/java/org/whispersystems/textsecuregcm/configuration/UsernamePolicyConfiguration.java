@@ -14,7 +14,7 @@ import jakarta.validation.constraints.NotBlank;
  * Optional. With no {@code usernamePolicy} block the server behaves exactly as upstream and reserves whatever a client
  * asks for; that is the right default for the local stack and for tests.
  *
- * @param denylistPath path to the {@code username-denylist-<version>.bloom} file
+ * @param denylistPath path to the {@code username-hash-denylist-<version>.bin} file
  * @param required     whether a missing or malformed file should stop the server from starting. Production sets this
  *                     true so that a bad deploy fails loudly instead of quietly accepting {@code admin.01}.
  */

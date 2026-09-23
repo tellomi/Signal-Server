@@ -9,6 +9,7 @@ import com.google.protobuf.ByteString;
 import io.grpc.StatusRuntimeException;
 import java.io.IOException;
 import java.security.SecureRandom;
+import io.micrometer.core.instrument.Metrics;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -122,6 +123,8 @@ import org.whispersystems.textsecuregcm.storage.AnnotatedMfaKey;
 import org.whispersystems.textsecuregcm.storage.AnnotatedTotpKey;
 import org.whispersystems.textsecuregcm.storage.AnnotatedWebAuthnCredential;
 import org.whispersystems.textsecuregcm.storage.ChangeNumberManager;
+import org.whispersystems.textsecuregcm.metrics.MetricsUtil;
+import org.whispersystems.textsecuregcm.username.UsernameHashDenylist;
 import org.whispersystems.textsecuregcm.storage.DeviceCapability;
 import org.whispersystems.textsecuregcm.storage.PhoneNumberRecoveryPasswordsManager;
 import org.whispersystems.textsecuregcm.storage.TooManyMfaKeysException;
@@ -146,6 +149,12 @@ public class AccountsGrpcService extends SimpleAccountsGrpc.AccountsImplBase {
   private final PhoneNumberRecoveryPasswordsManager phoneNumberRecoveryPasswordsManager;
   private final Clock clock;
   private final ChangeNumberManager changeNumberManager;
+  // Tellomi: reserved / brand / impersonation usernames (ADR-0062 §5.4, ADR-0066). The REST endpoint filters with the
+  // same list; without this the gRPC endpoint would be a way around it for a modified client.
+  private final UsernameHashDenylist usernameHashDenylist;
+
+  private static final String USERNAME_RESERVATION_DENIED_COUNTER_NAME =
+      MetricsUtil.name(AccountsGrpcService.class, "usernameReservationDenied");
 
   private static class MfaKeyNotFoundException extends NoStackTraceRuntimeException {
   }
@@ -155,7 +164,8 @@ public class AccountsGrpcService extends SimpleAccountsGrpc.AccountsImplBase {
       final UsernameHashZkProofVerifier usernameHashZkProofVerifier,
       final PhoneNumberRecoveryPasswordsManager phoneNumberRecoveryPasswordsManager,
       final Clock clock,
-      final ChangeNumberManager changeNumberManager) {
+      final ChangeNumberManager changeNumberManager,
+      final UsernameHashDenylist usernameHashDenylist) {
 
     this.accountsManager = accountsManager;
     this.rateLimiters = rateLimiters;
@@ -163,6 +173,7 @@ public class AccountsGrpcService extends SimpleAccountsGrpc.AccountsImplBase {
     this.phoneNumberRecoveryPasswordsManager = phoneNumberRecoveryPasswordsManager;
     this.clock = clock;
     this.changeNumberManager = changeNumberManager;
+    this.usernameHashDenylist = usernameHashDenylist;
   }
 
   @Override
@@ -242,9 +253,22 @@ public class AccountsGrpcService extends SimpleAccountsGrpc.AccountsImplBase {
 
     rateLimiters.getUsernameReserveLimiter().validate(authenticatedDevice.accountIdentifier());
 
+    // Tellomi: drop reserved candidates before offering them, exactly as AccountController does. A denied request is
+    // answered exactly like a taken one, so this endpoint cannot be used to enumerate the lexicon either.
+    final List<byte[]> candidates = usernameHashes.stream()
+        .filter(hash -> !usernameHashDenylist.contains(hash))
+        .toList();
+
+    if (candidates.isEmpty()) {
+      Metrics.counter(USERNAME_RESERVATION_DENIED_COUNTER_NAME).increment();
+      return ReserveUsernameHashResponse.newBuilder()
+          .setUsernameNotAvailable(UsernameNotAvailable.getDefaultInstance())
+          .build();
+    }
+
     try {
       final AccountsManager.UsernameReservation usernameReservation =
-          accountsManager.reserveUsernameHash(authenticatedDevice.accountIdentifier(), usernameHashes);
+          accountsManager.reserveUsernameHash(authenticatedDevice.accountIdentifier(), candidates);
 
       return ReserveUsernameHashResponse.newBuilder()
           .setUsernameHash(ByteString.copyFrom(usernameReservation.reservedUsernameHash()))
