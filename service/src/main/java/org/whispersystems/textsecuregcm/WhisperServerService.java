@@ -1483,7 +1483,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
   }
 
   /**
-   * Tellomi: load the reserved-username Bloom filter (ADR-0062 §5.4).
+   * Tellomi: load the reserved-username hash list (ADR-0062 §5.4, ADR-0066).
    * <p>
    * With no configuration the server behaves as upstream does and reserves whatever a client asks for — that is what
    * the local stack and the tests want. When a filter is configured but cannot be read, {@code required} decides

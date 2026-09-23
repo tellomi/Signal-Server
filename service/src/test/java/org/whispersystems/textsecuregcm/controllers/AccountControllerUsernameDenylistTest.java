@@ -49,7 +49,7 @@ import org.whispersystems.textsecuregcm.util.UsernameHashZkProofVerifier;
 class AccountControllerUsernameDenylistTest {
 
   /** Same fixture as {@link org.whispersystems.textsecuregcm.username.UsernameHashDenylistTest}: term "parityreserved". */
-  private static final String FIXTURE = "/username/parity-denylist.bloom";
+  private static final String FIXTURE = "/username/parity-denylist.bin";
 
   private static final AccountsManager accountsManager = mock(AccountsManager.class);
   private static final RateLimiters rateLimiters = mock(RateLimiters.class, org.mockito.Mockito.RETURNS_DEEP_STUBS);
@@ -69,7 +69,7 @@ class AccountControllerUsernameDenylistTest {
 
   private static UsernameHashDenylist loadFixture() {
     try (var stream = AccountControllerUsernameDenylistTest.class.getResourceAsStream(FIXTURE)) {
-      final Path tmp = Files.createTempFile("denylist", ".bloom");
+      final Path tmp = Files.createTempFile("denylist", ".bin");
       Files.write(tmp, stream.readAllBytes());
       return UsernameHashDenylist.load(tmp);
     } catch (final Exception e) {
