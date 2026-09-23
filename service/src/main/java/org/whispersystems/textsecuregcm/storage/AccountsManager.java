@@ -153,6 +153,11 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
   private final ScheduledExecutorService messagesPollExecutor;
   private final ScheduledExecutorService retryExecutor;
   private final Clock clock;
+
+  /// Tellomi (ADR-0066, TR-ID-01): how long after changing its username an account must wait before changing it again.
+  /// Paired with Accounts#USERNAME_HOLD_DURATION: without it, one account could hold its current name plus three held
+  /// ones just by renaming in a row.
+  public static final Duration USERNAME_CHANGE_COOLDOWN = Duration.ofDays(30);
   private final Duration maxTotpValidationDelay;
 
   private final KeyGenerator totpKeyGenerator;
@@ -1146,6 +1151,12 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
       return new UsernameReservation(account, account.getUsernameHash().get());
     }
 
+    // Tellomi (ADR-0066 §6.2): the rename cooldown is judged inside the persister, on the copy of the account that
+    // updateWithRetries has just re-read, not on the one fetched above. The reservation write is conditioned on the
+    // account version, so a rename confirmed concurrently with this reserve forces a retry, and the retry sees it.
+    // Both public entry points (REST and gRPC) come through here, so neither can be used to get around it.
+    final Instant now = clock.instant();
+
     final AtomicReference<byte[]> reservedUsernameHash = new AtomicReference<>();
 
     redisDelete(account);
@@ -1153,13 +1164,43 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     final Account updatedAccount = updateWithRetries(
         _ -> true,
         a -> reservedUsernameHash.set(
-            checkAndReserveNextUsernameHash(a, new ArrayDeque<>(requestedUsernameHashes))),
+            checkAndReserveNextUsernameHash(a,
+                new ArrayDeque<>(candidatesAllowedByRenameCooldown(a, requestedUsernameHashes, now)))),
         () -> accounts.getByAccountIdentifier(account.getAccountIdentifier()).orElseThrow(AccountNotFoundException::new),
         AccountChangeValidator.USERNAME_CHANGE_VALIDATOR);
 
     redisDelete(updatedAccount);
 
     return new UsernameReservation(updatedAccount, reservedUsernameHash.get());
+  }
+
+  /// Tellomi (ADR-0066 §6.2): outside the 30-day rename cooldown every requested hash may be tried. Inside it, only
+  /// this account's own unexpired holds may — taking back a name you just gave up undoes a change and cannot squat
+  /// anything (owner 2026-09-23). Otherwise the request is refused with the time left, rounded up to whole seconds so
+  /// that a client honouring Retry-After never retries a moment too early.
+  private static List<byte[]> candidatesAllowedByRenameCooldown(final Account account,
+      final List<byte[]> requestedUsernameHashes, final Instant now) throws UsernameChangeCooldownException {
+
+    final Optional<Duration> cooldownLeft = account.getUsernameChangedAt()
+        .map(changedAt -> Duration.between(now, changedAt.plus(USERNAME_CHANGE_COOLDOWN)))
+        .filter(Duration::isPositive);
+
+    if (cooldownLeft.isEmpty()) {
+      return requestedUsernameHashes;
+    }
+
+    final List<byte[]> ownHeldNames = requestedUsernameHashes.stream()
+        .filter(hash -> account.getUsernameHolds().stream().anyMatch(hold ->
+            hold.expirationSecs() > now.getEpochSecond() && Arrays.equals(hold.usernameHash(), hash)))
+        .toList();
+
+    if (ownHeldNames.isEmpty()) {
+      final Duration left = cooldownLeft.get();
+      throw new UsernameChangeCooldownException(
+          left.getNano() == 0 ? left : Duration.ofSeconds(left.getSeconds() + 1));
+    }
+
+    return ownHeldNames;
   }
 
   private byte[] checkAndReserveNextUsernameHash(final Account account, final Queue<byte[]> requestedUsernameHashes)

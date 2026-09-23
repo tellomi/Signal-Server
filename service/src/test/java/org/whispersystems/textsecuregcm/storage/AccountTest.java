@@ -349,4 +349,20 @@ class AccountTest {
 
     assertThrows(IllegalStateException.class, account::getNextMfaKeyId);
   }
+
+  /** Tellomi (ADR-0066): the rename-cooldown timestamp must survive the JSON the account is stored as. */
+  @Test
+  void tellomiUsernameChangedAtSurvivesSerialization() throws Exception {
+    final Account account = AccountsHelper.generateTestAccount("+14151234567", UUID.randomUUID(), UUID.randomUUID(),
+        new java.util.ArrayList<>(), new byte[16]);
+    assertTrue(account.getUsernameChangedAt().isEmpty());
+
+    final java.time.Instant changedAt = java.time.Instant.ofEpochSecond(1_790_000_000L);
+    account.setUsernameChangedAt(changedAt);
+
+    final String json = SystemMapper.jsonMapper().writeValueAsString(account);
+    assertTrue(json.contains("\"tuc\":1790000000"), json);
+    assertEquals(java.util.Optional.of(changedAt),
+        SystemMapper.jsonMapper().readValue(json, Account.class).getUsernameChangedAt());
+  }
 }

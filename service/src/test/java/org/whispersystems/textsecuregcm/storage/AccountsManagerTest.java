@@ -1538,6 +1538,102 @@ class AccountsManagerTest {
     verify(accounts, never()).reserveUsernameHash(any(), any(), any());
   }
 
+  // ── Tellomi: 30-day rename cooldown (ADR-0066, TR-ID-01) ──
+
+  private Account accountThatChangedItsUsername(final Duration ago) {
+    // The change time is stored in whole seconds; pin the clock to one so "time left" is exact.
+    CLOCK.pin(Instant.ofEpochSecond(CLOCK.instant().getEpochSecond()));
+    final Account account = AccountsHelper.generateTestAccount("+18005551234", UUID.randomUUID(), UUID.randomUUID(),
+        new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
+    account.setUsernameHash(TestRandomUtil.nextBytes(32));
+    account.setUsernameChangedAt(CLOCK.instant().minus(ago));
+    when(accounts.getByAccountIdentifier(account.getAccountIdentifier())).thenReturn(Optional.of(account));
+    return account;
+  }
+
+  @Test
+  void tellomiReserveDuringCooldownIsRefusedWithTheTimeLeft() throws Exception {
+    final Account account = accountThatChangedItsUsername(Duration.ofDays(1));
+
+    final UsernameChangeCooldownException e = assertThrows(UsernameChangeCooldownException.class,
+        () -> accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(TestRandomUtil.nextBytes(32))));
+    assertEquals(AccountsManager.USERNAME_CHANGE_COOLDOWN.minus(Duration.ofDays(1)), e.getRetryAfter());
+    verify(accounts, never()).reserveUsernameHash(any(), any(), any());
+  }
+
+  @Test
+  void tellomiReserveAfterTheCooldownIsAllowed() throws UsernameHashNotAvailableException {
+    final Account account =
+        accountThatChangedItsUsername(AccountsManager.USERNAME_CHANGE_COOLDOWN.plusSeconds(1));
+    final byte[] wanted = TestRandomUtil.nextBytes(32);
+
+    assertArrayEquals(wanted, accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(wanted))
+        .reservedUsernameHash());
+  }
+
+  @Test
+  void tellomiTakingBackAHeldNameIsAllowedDuringTheCooldown() throws UsernameHashNotAvailableException {
+    final Account account = accountThatChangedItsUsername(Duration.ofDays(1));
+    final byte[] held = TestRandomUtil.nextBytes(32);
+    account.setUsernameHolds(List.of(new Account.UsernameHold(held, CLOCK.instant().plus(Duration.ofDays(29)).getEpochSecond())));
+
+    // A fresh candidate first: it must be skipped, not reserved, and the held one offered instead.
+    final UsernameReservation result = accountsManager.reserveUsernameHash(account.getAccountIdentifier(),
+        List.of(TestRandomUtil.nextBytes(32), held));
+    assertArrayEquals(held, result.reservedUsernameHash());
+    verify(accounts, times(1)).reserveUsernameHash(eq(account), argThat(hash -> Arrays.equals(hash, held)), any());
+  }
+
+  @Test
+  void tellomiAnExpiredHoldDoesNotOpenTheCooldown() throws Exception {
+    final Account account = accountThatChangedItsUsername(Duration.ofDays(1));
+    final byte[] expired = TestRandomUtil.nextBytes(32);
+    account.setUsernameHolds(List.of(new Account.UsernameHold(expired, CLOCK.instant().minusSeconds(1).getEpochSecond())));
+
+    assertThrows(UsernameChangeCooldownException.class,
+        () -> accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(expired)));
+  }
+
+  /**
+   * Signal-Server#4 review: a rename confirmed while this reserve is in flight. The first read shows no cooldown; the
+   * reservation write loses the version race, and the retry re-reads an account that is now in cooldown. The check
+   * must run on that re-read copy, not only on the first one.
+   */
+  @Test
+  void tellomiARenameConfirmedDuringTheReserveIsSeenOnRetry() throws Exception {
+    CLOCK.pin(Instant.ofEpochSecond(CLOCK.instant().getEpochSecond()));
+    final UUID aci = UUID.randomUUID();
+    final Account beforeRename = AccountsHelper.generateTestAccount("+18005551234", aci, UUID.randomUUID(),
+        new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
+    beforeRename.setUsernameHash(TestRandomUtil.nextBytes(32));
+    final Account afterRename = AccountsHelper.generateTestAccount("+18005551234", aci, UUID.randomUUID(),
+        new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
+    afterRename.setUsernameHash(TestRandomUtil.nextBytes(32));
+    afterRename.setUsernameChangedAt(CLOCK.instant());
+
+    // first fetch, then updateWithRetries' first read, then its re-read after the version conflict
+    when(accounts.getByAccountIdentifier(aci))
+        .thenReturn(Optional.of(beforeRename), Optional.of(beforeRename), Optional.of(afterRename));
+    doThrow(new ContestedOptimisticLockException()).when(accounts).reserveUsernameHash(any(), any(), any());
+
+    final UsernameChangeCooldownException e = assertThrows(UsernameChangeCooldownException.class,
+        () -> accountsManager.reserveUsernameHash(aci, List.of(TestRandomUtil.nextBytes(32))));
+    assertEquals(AccountsManager.USERNAME_CHANGE_COOLDOWN, e.getRetryAfter());
+    verify(accounts, times(1)).reserveUsernameHash(any(), any(), any());
+  }
+
+  /** Retry-After is rounded up to whole seconds: a client that waits exactly that long must not be refused again. */
+  @Test
+  void tellomiTheTimeLeftIsRoundedUpToWholeSeconds() {
+    final Account account = accountThatChangedItsUsername(Duration.ofDays(1));
+    CLOCK.pin(CLOCK.instant().plusMillis(250));
+
+    final UsernameChangeCooldownException e = assertThrows(UsernameChangeCooldownException.class,
+        () -> accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(TestRandomUtil.nextBytes(32))));
+    // 29 days minus 250 ms left → 29 days exactly, not 29 days minus one second
+    assertEquals(AccountsManager.USERNAME_CHANGE_COOLDOWN.minus(Duration.ofDays(1)), e.getRetryAfter());
+  }
+
   @Test
   void testReserveUsernameOptimisticLockingFailure() throws UsernameHashNotAvailableException {
     final Account account = AccountsHelper.generateTestAccount("+18005551234", UUID.randomUUID(), UUID.randomUUID(), new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
