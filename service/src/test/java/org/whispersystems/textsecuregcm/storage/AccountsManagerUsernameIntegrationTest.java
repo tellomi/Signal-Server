@@ -473,4 +473,53 @@ class AccountsManagerUsernameIntegrationTest {
     assertThrows(UsernameChangeCooldownException.class,
         () -> accountsManager.reserveUsernameHash(aci, List.of(TestRandomUtil.nextBytes(32))));
   }
+
+  /**
+   * Signal-Server#4 review: re-registering (new phone, restore) must not reset the cooldown or forget the holds —
+   * otherwise every re-registration is two free renames. Reclaiming the original username afterwards still works.
+   */
+  @Test
+  void reRegisteringKeepsTheCooldownAndTheHolds() throws Exception {
+    Account account = AccountsHelper.createAccount(accountsManager, "+18005551111");
+    account = setUsername(account, USERNAME_HASH_1);
+    account = setUsername(account, USERNAME_HASH_2);
+    final java.time.Instant changedAt = account.getUsernameChangedAt().orElseThrow();
+
+    final Account reclaimed = AccountsHelper.createAccount(accountsManager, "+18005551111");
+    assertEquals(account.getAccountIdentifier(), reclaimed.getAccountIdentifier());
+    assertEquals(java.util.Optional.of(changedAt), reclaimed.getUsernameChangedAt());
+    assertTrue(reclaimed.getUsernameHolds().stream().anyMatch(h -> java.util.Arrays.equals(h.usernameHash(), USERNAME_HASH_1)));
+
+    final UUID aci = reclaimed.getAccountIdentifier();
+    assertThrows(UsernameChangeCooldownException.class,
+        () -> accountsManager.reserveUsernameHash(aci, List.of(TestRandomUtil.nextBytes(32))));
+
+    // The restore path (Android UsernameRepository.reclaimUsernameIfNecessary) confirms the original name directly.
+    final Account restored = accountsManager.confirmReservedUsernameHash(aci, USERNAME_HASH_2, ENCRYPTED_USERNAME_2);
+    assertArrayEquals(USERNAME_HASH_2, restored.getUsernameHash().orElseThrow());
+  }
+
+  /** ADR-0066 §6.2: taking back a held name is allowed during the cooldown, and restarts it (no flip-flopping). */
+  @Test
+  void takingBackAHeldNameRestartsTheCooldown() throws Exception {
+    Account account = AccountsHelper.createAccount(accountsManager, "+18005551111");
+    account = setUsername(account, USERNAME_HASH_1);
+    account = setUsername(account, USERNAME_HASH_2);
+
+    final java.time.Instant tenDaysLater = clock.instant().plus(java.time.Duration.ofDays(10));
+    clock.pin(tenDaysLater);
+    try {
+      account = setUsername(account, USERNAME_HASH_1);
+      assertEquals(java.util.Optional.of(java.time.Instant.ofEpochSecond(tenDaysLater.getEpochSecond())),
+          account.getUsernameChangedAt());
+
+      final UUID aci = account.getAccountIdentifier();
+      final UsernameChangeCooldownException e = assertThrows(UsernameChangeCooldownException.class,
+          () -> accountsManager.reserveUsernameHash(aci, List.of(TestRandomUtil.nextBytes(32))));
+      assertTrue(e.getRetryAfter().compareTo(AccountsManager.USERNAME_CHANGE_COOLDOWN.minusSeconds(1)) >= 0,
+          "the cooldown restarted at the take-back, so about 30 days are left: " + e.getRetryAfter());
+    } finally {
+      clock.unpin();
+    }
+  }
 }

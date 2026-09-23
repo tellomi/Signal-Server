@@ -421,6 +421,13 @@ public class Accounts {
       // just a temporary holding place for essentially ephemeral data
       accountToCreate.setMfaKeys(new HashMap<>(existingAccount.getMfaKeys()));
 
+      // Tellomi (ADR-0066 §6.2): the rename cooldown and the old-name holds belong to the account, not to one
+      // registration of it. Without these, re-registering would reset the cooldown (two free renames per round) and
+      // forget the holds, which also breaks the "not the account's first username" check and the three-hold cap.
+      // Reclaiming the original username after re-registering still works: that path confirms without a reserve.
+      accountToCreate.setUsernameChangedAt(existingAccount.getUsernameChangedAt().orElse(null));
+      accountToCreate.setUsernameHolds(existingAccount.getUsernameHolds());
+
       final List<TransactWriteItem> writeItems = new ArrayList<>();
 
       // If we're reclaiming an account that already has a username, we'd like to give the re-registering client

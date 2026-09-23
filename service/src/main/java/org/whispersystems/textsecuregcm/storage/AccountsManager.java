@@ -1135,8 +1135,6 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
   public UsernameReservation reserveUsernameHash(final UUID accountIdentifier, final List<byte[]> requestedUsernameHashes)
       throws UsernameHashNotAvailableException {
 
-    List<byte[]> candidates = requestedUsernameHashes;
-
     // Always fetch a fresh, non-cached copy of the account before making modifications
     final Account account = accounts.getByAccountIdentifier(accountIdentifier)
         .orElseThrow(() -> new IllegalArgumentException("Account not found: " + accountIdentifier));
@@ -1153,23 +1151,11 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
       return new UsernameReservation(account, account.getUsernameHash().get());
     }
 
-    // Tellomi (ADR-0066, TR-ID-01): 30-day rename cooldown. Taking back one of this account's own held names is always
-    // allowed — it only undoes a change and cannot squat anything. Both public entry points (REST and gRPC) come
-    // through here, so neither can be used to get around it.
+    // Tellomi (ADR-0066 §6.2): the rename cooldown is judged inside the persister, on the copy of the account that
+    // updateWithRetries has just re-read, not on the one fetched above. The reservation write is conditioned on the
+    // account version, so a rename confirmed concurrently with this reserve forces a retry, and the retry sees it.
+    // Both public entry points (REST and gRPC) come through here, so neither can be used to get around it.
     final Instant now = clock.instant();
-    final Optional<Duration> cooldownLeft = account.getUsernameChangedAt()
-        .map(changedAt -> Duration.between(now, changedAt.plus(USERNAME_CHANGE_COOLDOWN)))
-        .filter(Duration::isPositive);
-    if (cooldownLeft.isPresent()) {
-      candidates = requestedUsernameHashes.stream()
-          .filter(hash -> account.getUsernameHolds().stream().anyMatch(hold ->
-              hold.expirationSecs() > now.getEpochSecond() && Arrays.equals(hold.usernameHash(), hash)))
-          .toList();
-      if (candidates.isEmpty()) {
-        throw new UsernameChangeCooldownException(cooldownLeft.get());
-      }
-    }
-    final List<byte[]> allowedCandidates = candidates;
 
     final AtomicReference<byte[]> reservedUsernameHash = new AtomicReference<>();
 
@@ -1178,13 +1164,43 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     final Account updatedAccount = updateWithRetries(
         _ -> true,
         a -> reservedUsernameHash.set(
-            checkAndReserveNextUsernameHash(a, new ArrayDeque<>(allowedCandidates))),
+            checkAndReserveNextUsernameHash(a,
+                new ArrayDeque<>(candidatesAllowedByRenameCooldown(a, requestedUsernameHashes, now)))),
         () -> accounts.getByAccountIdentifier(account.getAccountIdentifier()).orElseThrow(AccountNotFoundException::new),
         AccountChangeValidator.USERNAME_CHANGE_VALIDATOR);
 
     redisDelete(updatedAccount);
 
     return new UsernameReservation(updatedAccount, reservedUsernameHash.get());
+  }
+
+  /// Tellomi (ADR-0066 §6.2): outside the 30-day rename cooldown every requested hash may be tried. Inside it, only
+  /// this account's own unexpired holds may — taking back a name you just gave up undoes a change and cannot squat
+  /// anything (owner 2026-09-23). Otherwise the request is refused with the time left, rounded up to whole seconds so
+  /// that a client honouring Retry-After never retries a moment too early.
+  private static List<byte[]> candidatesAllowedByRenameCooldown(final Account account,
+      final List<byte[]> requestedUsernameHashes, final Instant now) throws UsernameChangeCooldownException {
+
+    final Optional<Duration> cooldownLeft = account.getUsernameChangedAt()
+        .map(changedAt -> Duration.between(now, changedAt.plus(USERNAME_CHANGE_COOLDOWN)))
+        .filter(Duration::isPositive);
+
+    if (cooldownLeft.isEmpty()) {
+      return requestedUsernameHashes;
+    }
+
+    final List<byte[]> ownHeldNames = requestedUsernameHashes.stream()
+        .filter(hash -> account.getUsernameHolds().stream().anyMatch(hold ->
+            hold.expirationSecs() > now.getEpochSecond() && Arrays.equals(hold.usernameHash(), hash)))
+        .toList();
+
+    if (ownHeldNames.isEmpty()) {
+      final Duration left = cooldownLeft.get();
+      throw new UsernameChangeCooldownException(
+          left.getNano() == 0 ? left : Duration.ofSeconds(left.getSeconds() + 1));
+    }
+
+    return ownHeldNames;
   }
 
   private byte[] checkAndReserveNextUsernameHash(final Account account, final Queue<byte[]> requestedUsernameHashes)

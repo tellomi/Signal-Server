@@ -5,6 +5,7 @@
 
 package org.whispersystems.textsecuregcm.controllers;
 
+import org.whispersystems.textsecuregcm.storage.UsernameChangeCooldownException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
@@ -170,5 +171,20 @@ class AccountControllerUsernameDenylistTest {
     final ArgumentCaptor<List<byte[]>> offered = ArgumentCaptor.forClass(List.class);
     verify(accountsManager).reserveUsernameHash(any(), offered.capture());
     assertThat(offered.getValue()).containsExactly(first, second);
+  }
+
+  /**
+   * Tellomi (ADR-0066 §6.2): the rename cooldown is answered as a rate limit with the time left — never as "taken",
+   * so a client can say "you can change it again in N days".
+   */
+  @Test
+  void aRenameCooldownIsA429WithRetryAfter() throws Exception {
+    when(accountsManager.reserveUsernameHash(any(), any()))
+        .thenThrow(new UsernameChangeCooldownException(java.time.Duration.ofSeconds(2_505_600)));
+
+    try (final Response response = reserve(hashOf("xiaoming.42"))) {
+      assertThat(response.getStatus()).isEqualTo(429);
+      assertThat(response.getHeaderString("Retry-After")).isEqualTo("2505600");
+    }
   }
 }

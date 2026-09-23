@@ -1594,6 +1594,46 @@ class AccountsManagerTest {
         () -> accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(expired)));
   }
 
+  /**
+   * Signal-Server#4 review: a rename confirmed while this reserve is in flight. The first read shows no cooldown; the
+   * reservation write loses the version race, and the retry re-reads an account that is now in cooldown. The check
+   * must run on that re-read copy, not only on the first one.
+   */
+  @Test
+  void tellomiARenameConfirmedDuringTheReserveIsSeenOnRetry() throws Exception {
+    CLOCK.pin(Instant.ofEpochSecond(CLOCK.instant().getEpochSecond()));
+    final UUID aci = UUID.randomUUID();
+    final Account beforeRename = AccountsHelper.generateTestAccount("+18005551234", aci, UUID.randomUUID(),
+        new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
+    beforeRename.setUsernameHash(TestRandomUtil.nextBytes(32));
+    final Account afterRename = AccountsHelper.generateTestAccount("+18005551234", aci, UUID.randomUUID(),
+        new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);
+    afterRename.setUsernameHash(TestRandomUtil.nextBytes(32));
+    afterRename.setUsernameChangedAt(CLOCK.instant());
+
+    // first fetch, then updateWithRetries' first read, then its re-read after the version conflict
+    when(accounts.getByAccountIdentifier(aci))
+        .thenReturn(Optional.of(beforeRename), Optional.of(beforeRename), Optional.of(afterRename));
+    doThrow(new ContestedOptimisticLockException()).when(accounts).reserveUsernameHash(any(), any(), any());
+
+    final UsernameChangeCooldownException e = assertThrows(UsernameChangeCooldownException.class,
+        () -> accountsManager.reserveUsernameHash(aci, List.of(TestRandomUtil.nextBytes(32))));
+    assertEquals(AccountsManager.USERNAME_CHANGE_COOLDOWN, e.getRetryAfter());
+    verify(accounts, times(1)).reserveUsernameHash(any(), any(), any());
+  }
+
+  /** Retry-After is rounded up to whole seconds: a client that waits exactly that long must not be refused again. */
+  @Test
+  void tellomiTheTimeLeftIsRoundedUpToWholeSeconds() {
+    final Account account = accountThatChangedItsUsername(Duration.ofDays(1));
+    CLOCK.pin(CLOCK.instant().plusMillis(250));
+
+    final UsernameChangeCooldownException e = assertThrows(UsernameChangeCooldownException.class,
+        () -> accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(TestRandomUtil.nextBytes(32))));
+    // 29 days minus 250 ms left → 29 days exactly, not 29 days minus one second
+    assertEquals(AccountsManager.USERNAME_CHANGE_COOLDOWN.minus(Duration.ofDays(1)), e.getRetryAfter());
+  }
+
   @Test
   void testReserveUsernameOptimisticLockingFailure() throws UsernameHashNotAvailableException {
     final Account account = AccountsHelper.generateTestAccount("+18005551234", UUID.randomUUID(), UUID.randomUUID(), new ArrayList<>(), new byte[UnidentifiedAccessUtil.UNIDENTIFIED_ACCESS_KEY_LENGTH]);

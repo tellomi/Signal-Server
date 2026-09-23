@@ -5,6 +5,7 @@
 
 package org.whispersystems.textsecuregcm.grpc;
 
+import org.whispersystems.textsecuregcm.storage.UsernameChangeCooldownException;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -477,6 +478,20 @@ class AccountsGrpcServiceTest extends SimpleBaseGrpcTest<AccountsGrpcService, Ac
     GrpcTestUtils.assertStatusException(Status.INVALID_ARGUMENT,
         () -> authenticatedServiceStub().reserveUsernameHash(ReserveUsernameHashRequest.newBuilder()
             .addUsernameHashes(ByteString.copyFrom(usernameHash))
+            .build()));
+  }
+
+  /** Tellomi (ADR-0066 §6.2): the rename cooldown reaches gRPC clients as RESOURCE_EXHAUSTED with the exact time left. */
+  @Test
+  void reserveUsernameHashDuringRenameCooldown() throws Exception {
+    final Duration retryAfter = Duration.ofSeconds(2_505_600);
+    when(accountsManager.reserveUsernameHash(any(), any()))
+        .thenThrow(new UsernameChangeCooldownException(retryAfter));
+
+    //noinspection ResultOfMethodCallIgnored
+    GrpcTestUtils.assertRateLimitExceeded(retryAfter,
+        () -> authenticatedServiceStub().reserveUsernameHash(ReserveUsernameHashRequest.newBuilder()
+            .addUsernameHashes(ByteString.copyFrom(TestRandomUtil.nextBytes(AccountController.USERNAME_HASH_LENGTH)))
             .build()));
   }
 
