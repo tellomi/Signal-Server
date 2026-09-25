@@ -6,13 +6,17 @@
 package org.whispersystems.textsecuregcm.securevaluerecovery;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
+import static com.github.tomakehurst.wiremock.client.WireMock.anyRequestedFor;
+import static com.github.tomakehurst.wiremock.client.WireMock.anyUrl;
 import static com.github.tomakehurst.wiremock.client.WireMock.delete;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.wireMockConfig;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.whispersystems.textsecuregcm.util.MockUtils.randomSecretBytes;
 
@@ -29,9 +33,11 @@ import java.util.concurrent.TimeUnit;
 import org.apache.commons.lang3.RandomStringUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.RegisterExtension;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentials;
 import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentialsGenerator;
 import org.whispersystems.textsecuregcm.configuration.SecureValueRecoveryConfiguration;
@@ -45,6 +51,7 @@ class SecureValueRecoveryClientTest {
   private ExecutorService httpExecutor;
   private ScheduledExecutorService retryExecutor;
 
+  private SecureValueRecoveryConfiguration config;
   private SecureValueRecoveryClient secureValueRecoveryClient;
 
   @RegisterExtension
@@ -59,7 +66,7 @@ class SecureValueRecoveryClientTest {
     httpExecutor = Executors.newSingleThreadExecutor();
     retryExecutor = Executors.newSingleThreadScheduledExecutor();
 
-    final SecureValueRecoveryConfiguration config = new SecureValueRecoveryConfiguration(
+    config = new SecureValueRecoveryConfiguration(
         "http://localhost:" + wireMock.getPort(),
         randomSecretBytes(32),
         randomSecretBytes(32),
@@ -148,5 +155,27 @@ class SecureValueRecoveryClientTest {
     } else {
       CompletableFutureTestUtil.assertFailsWithCause(SecureValueRecoveryException.class, deleteFuture);
     }
+  }
+
+  @Test
+  void deployedWhenHttpUrl() {
+    assertTrue(secureValueRecoveryClient.isDeployed());
+  }
+
+  // Tellomi (tellomi/tellomi#1237): with upstream's placeholder uri, removeData() used to throw
+  // IllegalArgumentException before returning a future, which made every account deletion fail half way.
+  @ParameterizedTest
+  @ValueSource(strings = {"svr2.example.com", "svrb.example.com", "localhost:1234", "/v1"})
+  void removeDataWhenNotDeployed(final String uri) throws CertificateException {
+    final SecureValueRecoveryClient notDeployedClient = new SecureValueRecoveryClient(credentialsGenerator,
+        httpExecutor, retryExecutor,
+        new SecureValueRecoveryConfiguration(uri, config.userAuthenticationTokenSharedSecret(),
+            config.userIdTokenSharedSecret(), config.svrCaCertificates(), null, null),
+        () -> ALLOWED_ERRORS);
+
+    assertFalse(notDeployedClient.isDeployed());
+    assertDoesNotThrow(() -> notDeployedClient.removeData(accountUuid).join());
+    verifyNoInteractions(credentialsGenerator);
+    wireMock.verify(0, anyRequestedFor(anyUrl()));
   }
 }

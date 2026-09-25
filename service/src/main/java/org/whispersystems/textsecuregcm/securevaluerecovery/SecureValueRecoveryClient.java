@@ -41,6 +41,13 @@ public class SecureValueRecoveryClient {
   private final Supplier<List<Integer>> allowedDeletionErrorStatusCodes;
   private final FaultTolerantHttpClient httpClient;
 
+  // Tellomi (tellomi/tellomi#1237): no SVR enclave is deployed, and the deployed config keeps upstream's placeholder
+  // uri (svr2.example.com, no scheme). With it every removeData() threw IllegalArgumentException *synchronously*,
+  // inside the allOf(...) of AccountsManager.delete() and after the storage-service delete had already gone out, so
+  // deleting an account always failed and left it half deleted. A uri that is not an absolute http(s) URL now means
+  // "not deployed": removeData() completes at once and sends nothing.
+  private final boolean deployed;
+
   @VisibleForTesting
   static final String DELETE_PATH = "/v1/delete";
 
@@ -51,7 +58,13 @@ public class SecureValueRecoveryClient {
       Supplier<List<Integer>> allowedDeletionErrorStatusCodes)
       throws CertificateException {
     this.secureValueRecoveryCredentialsGenerator = secureValueRecoveryCredentialsGenerator;
-    this.deleteUri = URI.create(configuration.uri()).resolve(DELETE_PATH);
+    final URI baseUri = URI.create(configuration.uri());
+    this.deployed = isHttpUrl(baseUri);
+    if (!deployed) {
+      logger.warn("Tellomi: secure value recovery uri {} is not an absolute http(s) URL; treating it as not deployed, "
+          + "so removeData() will not contact it", configuration.uri());
+    }
+    this.deleteUri = baseUri.resolve(DELETE_PATH);
     this.allowedDeletionErrorStatusCodes = allowedDeletionErrorStatusCodes;
     this.httpClient = FaultTolerantHttpClient.newBuilder("secure-value-recovery", executor)
         .withCircuitBreaker(configuration.circuitBreakerConfigurationName())
@@ -69,6 +82,11 @@ public class SecureValueRecoveryClient {
   }
 
   public CompletableFuture<Void> removeData(final String userIdentifier) {
+
+    if (!deployed) {
+      // Tellomi (#1237): nothing was ever stored in an SVR that does not exist, so there is nothing to remove.
+      return CompletableFuture.completedFuture(null);
+    }
 
     final ExternalServiceCredentials credentials = secureValueRecoveryCredentialsGenerator.generateFor(userIdentifier);
 
@@ -94,4 +112,14 @@ public class SecureValueRecoveryClient {
     });
   }
 
+  @VisibleForTesting
+  boolean isDeployed() {
+    return deployed;
+  }
+
+  private static boolean isHttpUrl(final URI uri) {
+    return uri.isAbsolute()
+        && ("https".equalsIgnoreCase(uri.getScheme()) || "http".equalsIgnoreCase(uri.getScheme()))
+        && uri.getHost() != null;
+  }
 }
