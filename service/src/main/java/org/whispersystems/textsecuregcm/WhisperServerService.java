@@ -146,6 +146,7 @@ import org.whispersystems.textsecuregcm.controllers.SecureStorageController;
 import org.whispersystems.textsecuregcm.controllers.SecureValueRecovery2Controller;
 import org.whispersystems.textsecuregcm.controllers.StickerController;
 import org.whispersystems.textsecuregcm.controllers.SubscriptionController;
+import org.whispersystems.textsecuregcm.controllers.TellomiAccountDeletionController;
 import org.whispersystems.textsecuregcm.controllers.VerificationController;
 import org.whispersystems.textsecuregcm.currency.CoinGeckoClient;
 import org.whispersystems.textsecuregcm.currency.CurrencyConversionManager;
@@ -1350,6 +1351,8 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         new RegistrationController(accountsManager, phoneVerificationTokenManager, registrationLockVerificationManager,
             rateLimiters, registrationFraudChecker, ReceiptCredentialPresentation::new, zkReceiptOperations, clock, dynamicConfigurationManager),
         new RemoteConfigController(remoteConfigsManager),
+        // Tellomi（Google Play 删号）：网页自助删号 POST /v1/tellomi/account-deletion（短信验证过的会话 + 注册锁把关）
+        new TellomiAccountDeletionController(accountsManager, phoneVerificationTokenManager, rateLimiters),
         new SecureStorageController(storageCredentialsGenerator),
         new SecureValueRecovery2Controller(svr2CredentialsGenerator, accountsManager),
         new StickerController(rateLimiters, stickerPolicyGenerator, Clock.systemUTC()),
