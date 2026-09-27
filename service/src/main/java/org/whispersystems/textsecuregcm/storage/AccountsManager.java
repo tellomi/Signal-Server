@@ -154,10 +154,12 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
   private final ScheduledExecutorService retryExecutor;
   private final Clock clock;
 
-  /// Tellomi (ADR-0066, TR-ID-01): how long after changing its username an account must wait before changing it again.
-  /// Paired with Accounts#USERNAME_HOLD_DURATION: without it, one account could hold its current name plus three held
-  /// ones just by renaming in a row.
-  public static final Duration USERNAME_CHANGE_COOLDOWN = Duration.ofDays(30);
+  /// Tellomi (ADR-0066, TR-ID-01): how long after changing its username an account must wait before changing it again,
+  /// unless `usernamePolicy.renameCooldown` says otherwise. 180 days since owner 2026-09-27 (was 30). Without a cooldown
+  /// one account could hold its current name plus three held ones just by renaming in a row. It is independent of
+  /// Accounts#USERNAME_HOLD_DURATION (30 days): taking back one's own old name is possible only while that hold lasts.
+  public static final Duration DEFAULT_USERNAME_CHANGE_COOLDOWN = Duration.ofDays(180);
+  private final Duration usernameChangeCooldown;
   private final Duration maxTotpValidationDelay;
 
   private final KeyGenerator totpKeyGenerator;
@@ -321,6 +323,40 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
       final byte[] linkDeviceSecret,
       final Duration maxTotpValidationDelay,
       final WebAuthnCeremonyManager webAuthnCeremonyManager) {
+
+    this(accounts, phoneNumberIdentifiers, cacheCluster, pubSubRedisClient, accountLockManager, keysManager,
+        messagesManager, profilesManager, changeNumberWaitingPeriodManager, secureStorageClient,
+        secureValueRecovery2Client, disconnectionRequestManager, phoneNumberRecoveryPasswordsManager,
+        messagesPollExecutor, retryExecutor, clock, linkDeviceSecret, maxTotpValidationDelay, webAuthnCeremonyManager,
+        DEFAULT_USERNAME_CHANGE_COOLDOWN);
+  }
+
+  /// Tellomi: as above, with the rename cooldown from `usernamePolicy.renameCooldown` (ADR-0066 §6.2).
+  public AccountsManager(final Accounts accounts,
+      final PhoneNumberIdentifiers phoneNumberIdentifiers,
+      final FaultTolerantRedisClusterClient cacheCluster,
+      final FaultTolerantRedisClient pubSubRedisClient,
+      final AccountLockManager accountLockManager,
+      final KeysManager keysManager,
+      final MessagesManager messagesManager,
+      final ProfilesManager profilesManager,
+      final ChangeNumberWaitingPeriodManager changeNumberWaitingPeriodManager,
+      final SecureStorageClient secureStorageClient,
+      final SecureValueRecoveryClient secureValueRecovery2Client,
+      final DisconnectionRequestManager disconnectionRequestManager,
+      final PhoneNumberRecoveryPasswordsManager phoneNumberRecoveryPasswordsManager,
+      final ScheduledExecutorService messagesPollExecutor,
+      final ScheduledExecutorService retryExecutor,
+      final Clock clock,
+      final byte[] linkDeviceSecret,
+      final Duration maxTotpValidationDelay,
+      final WebAuthnCeremonyManager webAuthnCeremonyManager,
+      final Duration usernameChangeCooldown) {
+
+    if (usernameChangeCooldown.isNegative()) {
+      throw new IllegalArgumentException("Username change cooldown must not be negative");
+    }
+    this.usernameChangeCooldown = usernameChangeCooldown;
     this.accounts = accounts;
     this.phoneNumberIdentifiers = phoneNumberIdentifiers;
     this.cacheCluster = cacheCluster;
@@ -508,6 +544,25 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     // Reuse the ACI from any recently-deleted account with this number to cover cases where somebody is
     // re-registering.
     account.setAccountIdentifier(maybeRecentlyDeletedAccountIdentifier.orElseGet(UUID::randomUUID));
+
+    // Tellomi (tellomi/tellomi#1397, owner 2026-09-27): the same number back within the 30 days also gets back the
+    // username holds the deleted account left — its username at deletion and names it had given up. The account holds
+    // no username and has no reservation, so nothing is handed back to the client; the user has to type the old name.
+    // The rename cooldown is not carried over, so the first username set is free (the old name or a new one), and
+    // because the account holds names, that set counts as a change and starts a full cooldown. The holds expire with
+    // the 30-day window, and so does the head start.
+    if (maybeRecentlyDeletedAccountIdentifier.isPresent() && maybePni.isPresent()) {
+      final List<Account.UsernameHold> holdsLeftBehind =
+          accounts.findRecentlyDeletedAccountUsernameHolds(maybePni.get());
+
+      if (!holdsLeftBehind.isEmpty()) {
+        final long nowSeconds = clock.instant().getEpochSecond();
+        account.setUsernameHolds(holdsLeftBehind.stream()
+            .filter(hold -> hold.expirationSecs() > nowSeconds)
+            .toList());
+      }
+    }
+
     account.setIdentityKey(aciIdentityKey);
     account.addDevice(primaryDeviceSpec.toDevice(Device.PRIMARY_ID, clock, aciIdentityKey));
     account.setUnidentifiedAccessKey(accountAttributes.getUnidentifiedAccessKey());
@@ -1165,7 +1220,7 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
         _ -> true,
         a -> reservedUsernameHash.set(
             checkAndReserveNextUsernameHash(a,
-                new ArrayDeque<>(candidatesAllowedByRenameCooldown(a, requestedUsernameHashes, now)))),
+                new ArrayDeque<>(candidatesAllowedByRenameCooldown(a, requestedUsernameHashes, now, usernameChangeCooldown)))),
         () -> accounts.getByAccountIdentifier(account.getAccountIdentifier()).orElseThrow(AccountNotFoundException::new),
         AccountChangeValidator.USERNAME_CHANGE_VALIDATOR);
 
@@ -1174,15 +1229,19 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     return new UsernameReservation(updatedAccount, reservedUsernameHash.get());
   }
 
-  /// Tellomi (ADR-0066 §6.2): outside the 30-day rename cooldown every requested hash may be tried. Inside it, only
-  /// this account's own unexpired holds may — taking back a name you just gave up undoes a change and cannot squat
-  /// anything (owner 2026-09-23). Otherwise the request is refused with the time left, rounded up to whole seconds so
-  /// that a client honouring Retry-After never retries a moment too early.
-  private static List<byte[]> candidatesAllowedByRenameCooldown(final Account account,
-      final List<byte[]> requestedUsernameHashes, final Instant now) throws UsernameChangeCooldownException {
+  /// Tellomi (ADR-0066 §6.2): outside the rename cooldown every requested hash may be tried. Inside it, only names that
+  /// are already this account's may — its unexpired holds (taking back a name you just gave up undoes a change and
+  /// cannot squat anything, owner 2026-09-23), and the name it has reserved, which after a re-registration is the
+  /// username being reclaimed (Accounts#reclaimAccount; reserving it again only extends a reservation it already has,
+  /// tellomi/tellomi#1397). Otherwise the request is refused with the time left, rounded up to whole seconds so that a
+  /// client honouring Retry-After never retries a moment too early.
+  @VisibleForTesting
+  static List<byte[]> candidatesAllowedByRenameCooldown(final Account account,
+      final List<byte[]> requestedUsernameHashes, final Instant now, final Duration usernameChangeCooldown)
+      throws UsernameChangeCooldownException {
 
     final Optional<Duration> cooldownLeft = account.getUsernameChangedAt()
-        .map(changedAt -> Duration.between(now, changedAt.plus(USERNAME_CHANGE_COOLDOWN)))
+        .map(changedAt -> Duration.between(now, changedAt.plus(usernameChangeCooldown)))
         .filter(Duration::isPositive);
 
     if (cooldownLeft.isEmpty()) {
@@ -1191,7 +1250,8 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
 
     final List<byte[]> ownHeldNames = requestedUsernameHashes.stream()
         .filter(hash -> account.getUsernameHolds().stream().anyMatch(hold ->
-            hold.expirationSecs() > now.getEpochSecond() && Arrays.equals(hold.usernameHash(), hash)))
+                hold.expirationSecs() > now.getEpochSecond() && Arrays.equals(hold.usernameHash(), hash))
+            || account.getReservedUsernameHash().map(reserved -> Arrays.equals(reserved, hash)).orElse(false))
         .toList();
 
     if (ownHeldNames.isEmpty()) {

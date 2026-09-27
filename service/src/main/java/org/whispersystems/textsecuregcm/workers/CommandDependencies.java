@@ -39,6 +39,7 @@ import org.whispersystems.textsecuregcm.backup.Cdn3BackupCredentialGenerator;
 import org.whispersystems.textsecuregcm.backup.Cdn3RemoteStorageManager;
 import org.whispersystems.textsecuregcm.backup.SecureValueRecoveryBCredentialsGeneratorFactory;
 import org.whispersystems.textsecuregcm.configuration.FoundationDbExternalClientConfiguration;
+import org.whispersystems.textsecuregcm.configuration.UsernamePolicyConfiguration;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
 import org.whispersystems.textsecuregcm.controllers.SecureStorageController;
 import org.whispersystems.textsecuregcm.controllers.SecureValueRecovery2Controller;
@@ -391,7 +392,9 @@ public record CommandDependencies(
         phoneNumberRecoveryPasswordsManager, messagePollExecutor,
         retryExecutor, clock, configuration.getLinkDeviceSecretConfiguration().secret().value(),
         configuration.getRegistrationTotpConfiguration().maxValidationDelay(),
-        webAuthnCeremonyManager);
+        webAuthnCeremonyManager,
+        // Tellomi (ADR-0066 §6.2): same rename cooldown as the server
+        UsernamePolicyConfiguration.renameCooldown(configuration.getUsernamePolicyConfiguration()));
     RateLimiters rateLimiters = RateLimiters.create(dynamicConfigurationManager, rateLimitersCluster, retryExecutor);
     final BackupsDb backupsDb =
         new BackupsDb(dynamoDbAsyncClient, configuration.getDynamoDbTables().getBackups().getTableName(), clock);

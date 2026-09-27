@@ -149,8 +149,9 @@ public class Account {
   @JsonProperty("holds")
   private List<UsernameHold> usernameHolds = Collections.emptyList();
 
-  // Tellomi (ADR-0066, TR-ID-01): when this account last *changed* its username, in epoch seconds. Drives the 30-day
-  // rename cooldown in AccountsManager#reserveUsernameHash. Absent for accounts that have only ever set one username.
+  // Tellomi (ADR-0066, TR-ID-01): when this account last *changed* its username, in epoch seconds. Drives the rename
+  // cooldown (180 days by default) in AccountsManager#reserveUsernameHash. Absent for accounts that have only ever set
+  // one username.
   @JsonProperty("tuc")
   @Nullable
   private Long usernameChangedAtEpochSeconds;

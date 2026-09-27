@@ -2334,6 +2334,145 @@ class AccountsTest {
     assertEquals(originalUsernameConstraints, regeneratedUsernameConstraints);
   }
 
+  // ── Tellomi (#1156): a deleted account's username is held for 30 days (privacy policy 2.0.0, ADR-0066 §6.2) ──
+
+  /// Sets USERNAME_HASH_1 on a new account, deletes the account, and returns the (now deleted) account.
+  private Account deleteAccountWithUsername() throws UsernameHashNotAvailableException {
+    final Account account = nextRandomAccount();
+    createAccount(account);
+    accounts.reserveUsernameHash(account, USERNAME_HASH_1, Duration.ofMinutes(5));
+    accounts.confirmUsernameHash(account, USERNAME_HASH_1, ENCRYPTED_USERNAME_1);
+
+    accounts.delete(account.getAccountIdentifier(), Collections.emptyList());
+    assertThat(accounts.getByAccountIdentifier(account.getAccountIdentifier())).isEmpty();
+
+    return account;
+  }
+
+  @Test
+  void anotherAccountCannotTakeADeletedAccountsUsernameDuringTheHold() throws UsernameHashNotAvailableException {
+    deleteAccountWithUsername();
+
+    final Account other = nextRandomAccount();
+    createAccount(other);
+
+    for (final Instant when : List.of(Instant.EPOCH,
+        Instant.EPOCH.plus(Accounts.USERNAME_HOLD_DURATION).minusSeconds(1))) {
+
+      clock.pin(when);
+
+      assertThrows(UsernameHashNotAvailableException.class,
+          () -> accounts.reserveUsernameHash(other, USERNAME_HASH_1, Duration.ofMinutes(5)),
+          "another account reserved a deleted account's username at " + when);
+
+      assertThrows(UsernameHashNotAvailableException.class,
+          () -> accounts.confirmUsernameHash(other, USERNAME_HASH_1, ENCRYPTED_USERNAME_1),
+          "another account confirmed a deleted account's username at " + when);
+
+      // "别人不能注册，也查不到": held, so not found — same as any other hold, nothing points at the deleted account
+      assertThat(accounts.getByUsernameHash(USERNAME_HASH_1).join()).isEmpty();
+    }
+  }
+
+  @Test
+  void theDeletedAccountsHoldIsIndistinguishableFromARenameHold() throws UsernameHashNotAvailableException {
+    final Account deleted = deleteAccountWithUsername();
+
+    final Account renamed = nextRandomAccount();
+    createAccount(renamed);
+    accounts.reserveUsernameHash(renamed, USERNAME_HASH_2, Duration.ofMinutes(5));
+    accounts.confirmUsernameHash(renamed, USERNAME_HASH_2, ENCRYPTED_USERNAME_2);
+    accounts.clearUsernameHash(renamed);
+
+    final Optional<Instant> holdExpiration = Optional.of(clock.instant().plus(Accounts.USERNAME_HOLD_DURATION));
+
+    assertEquals(Optional.of(new UsernameConstraint(deleted.getAccountIdentifier(), false, holdExpiration)),
+        getUsernameConstraint(USERNAME_HASH_1));
+    assertEquals(Optional.of(new UsernameConstraint(renamed.getAccountIdentifier(), false, holdExpiration)),
+        getUsernameConstraint(USERNAME_HASH_2));
+
+    // Same attributes, so no code path (or table scan) can tell "held after deletion" from "held after a rename"
+    assertEquals(getUsernameConstraintTableItem(USERNAME_HASH_2).keySet(),
+        getUsernameConstraintTableItem(USERNAME_HASH_1).keySet());
+  }
+
+  @Test
+  void reRegisteringTheSameNumberDuringTheHoldReclaimsTheUsername() throws UsernameHashNotAvailableException {
+    final Account deleted = deleteAccountWithUsername();
+    final UUID pni = deleted.getPhoneNumberIdentifier().orElseThrow();
+
+    clock.pin(Instant.EPOCH.plus(Accounts.USERNAME_HOLD_DURATION).minusSeconds(1));
+
+    // What AccountsManager#create does for a number whose account was deleted in the last 30 days: reuse the ACI.
+    assertThat(accounts.findRecentlyDeletedAccountIdentifier(pni)).hasValue(deleted.getAccountIdentifier());
+    final Account reRegistered = generateAccount(deleted.getNumber().orElseThrow(), deleted.getAccountIdentifier(), pni);
+    createAccount(reRegistered);
+
+    accounts.reserveUsernameHash(reRegistered, USERNAME_HASH_1, Duration.ofMinutes(5));
+    accounts.confirmUsernameHash(reRegistered, USERNAME_HASH_1, ENCRYPTED_USERNAME_1);
+
+    assertEquals(Optional.of(new UsernameConstraint(deleted.getAccountIdentifier(), true, Optional.empty())),
+        getUsernameConstraint(USERNAME_HASH_1));
+    assertThat(accounts.getByUsernameHash(USERNAME_HASH_1).join().map(Account::getAccountIdentifier))
+        .hasValue(deleted.getAccountIdentifier());
+  }
+
+  /// tellomi/tellomi#1397: the deleted-accounts record remembers which names are held for the ACI, so the account made
+  /// if the same number comes back can be their owner again. Accounts without any leave the record as upstream has it.
+  @Test
+  void deletionRecordsTheUsernameHoldsItLeavesBehind() throws UsernameHashNotAvailableException {
+    final Account account = nextRandomAccount();
+    createAccount(account);
+    accounts.reserveUsernameHash(account, USERNAME_HASH_1, Duration.ofMinutes(5));
+    accounts.confirmUsernameHash(account, USERNAME_HASH_1, ENCRYPTED_USERNAME_1);
+
+    clock.pin(Instant.EPOCH.plus(Duration.ofDays(3)));
+    accounts.reserveUsernameHash(account, USERNAME_HASH_2, Duration.ofMinutes(5));
+    accounts.confirmUsernameHash(account, USERNAME_HASH_2, ENCRYPTED_USERNAME_2);   // USERNAME_HASH_1 now held
+
+    clock.pin(Instant.EPOCH.plus(Duration.ofDays(5)));
+    accounts.delete(account.getAccountIdentifier(), Collections.emptyList());
+
+    final UUID pni = account.getPhoneNumberIdentifier().orElseThrow();
+    assertThat(accounts.findRecentlyDeletedAccountUsernameHolds(pni))
+        .usingRecursiveFieldByFieldElementComparator()
+        .containsExactly(
+            new Account.UsernameHold(USERNAME_HASH_1,
+                Instant.EPOCH.plus(Duration.ofDays(3)).plus(Accounts.USERNAME_HOLD_DURATION).getEpochSecond()),
+            new Account.UsernameHold(USERNAME_HASH_2,
+                Instant.EPOCH.plus(Duration.ofDays(5)).plus(Accounts.USERNAME_HOLD_DURATION).getEpochSecond()));
+
+    final Account withoutUsername = nextRandomAccount();
+    createAccount(withoutUsername);
+    accounts.delete(withoutUsername.getAccountIdentifier(), Collections.emptyList());
+    final UUID otherPni = withoutUsername.getPhoneNumberIdentifier().orElseThrow();
+    assertThat(accounts.findRecentlyDeletedAccountUsernameHolds(otherPni)).isEmpty();
+    assertThat(DYNAMO_DB_EXTENSION.getDynamoDbClient().getItem(GetItemRequest.builder()
+            .tableName(Tables.DELETED_ACCOUNTS.tableName())
+            .key(Map.of(Accounts.DELETED_ACCOUNTS_KEY_ACCOUNT_PNI, AttributeValues.fromString(otherPni.toString())))
+            .build()).item().keySet())
+        .containsExactlyInAnyOrder(Accounts.DELETED_ACCOUNTS_KEY_ACCOUNT_PNI,
+            Accounts.DELETED_ACCOUNTS_ATTR_ACCOUNT_UUID, Accounts.DELETED_ACCOUNTS_ATTR_EXPIRES);
+
+    assertThat(accounts.findRecentlyDeletedAccountUsernameHolds(UUID.randomUUID())).isEmpty();
+  }
+
+  @Test
+  void anyoneCanTakeADeletedAccountsUsernameOnceTheHoldEnds() throws UsernameHashNotAvailableException {
+    deleteAccountWithUsername();
+
+    final Account other = nextRandomAccount();
+    createAccount(other);
+
+    clock.pin(Instant.EPOCH.plus(Accounts.USERNAME_HOLD_DURATION).plusSeconds(1));
+
+    accounts.reserveUsernameHash(other, USERNAME_HASH_1, Duration.ofMinutes(5));
+    accounts.confirmUsernameHash(other, USERNAME_HASH_1, ENCRYPTED_USERNAME_1);
+
+    assertThat(accounts.getByUsernameHash(USERNAME_HASH_1).join().map(Account::getAccountIdentifier))
+        .hasValue(other.getAccountIdentifier());
+  }
+
   @Test
   void accountExists() {
     final UUID existingUuid = UUID.randomUUID();
