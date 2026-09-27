@@ -107,11 +107,13 @@ import org.whispersystems.textsecuregcm.backup.Cdn3BackupCredentialGenerator;
 import org.whispersystems.textsecuregcm.backup.Cdn3RemoteStorageManager;
 import org.whispersystems.textsecuregcm.backup.SecureValueRecoveryBCredentialsGeneratorFactory;
 import org.whispersystems.textsecuregcm.badges.ConfiguredProfileBadgeConverter;
+import org.whispersystems.textsecuregcm.captcha.AltchaCaptchaClient;
 import org.whispersystems.textsecuregcm.captcha.CaptchaChecker;
 import org.whispersystems.textsecuregcm.captcha.CaptchaClient;
 import org.whispersystems.textsecuregcm.captcha.RegistrationCaptchaManager;
 import org.whispersystems.textsecuregcm.captcha.ShortCodeExpander;
 import org.whispersystems.textsecuregcm.captcha.TurnstileCaptchaClient;
+import org.whispersystems.textsecuregcm.configuration.AltchaCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TurnstileCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.BadgeConfiguration;
 import org.whispersystems.textsecuregcm.configuration.FoundationDbExternalClientConfiguration;
@@ -147,6 +149,7 @@ import org.whispersystems.textsecuregcm.controllers.SecureValueRecovery2Controll
 import org.whispersystems.textsecuregcm.controllers.StickerController;
 import org.whispersystems.textsecuregcm.controllers.SubscriptionController;
 import org.whispersystems.textsecuregcm.controllers.TellomiAccountDeletionController;
+import org.whispersystems.textsecuregcm.controllers.TellomiCaptchaController;
 import org.whispersystems.textsecuregcm.controllers.VerificationController;
 import org.whispersystems.textsecuregcm.currency.CoinGeckoClient;
 import org.whispersystems.textsecuregcm.currency.CurrencyConversionManager;
@@ -1082,28 +1085,41 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
           log.warn("No registration-recovery-checkers found; using default (no-op) provider as a default");
           return RegistrationRecoveryChecker.noop();
         });
+    // Tellomi（ADR-0070）：大陆验证页用的自托管 ALTCHA；和 Turnstile 并存，按令牌前缀（scheme）选。挑战接口见 TellomiCaptchaController
+    final AltchaCaptchaConfiguration altchaConfig = config.getAltchaCaptchaConfiguration();
+    final AltchaCaptchaClient altchaCaptchaClient =
+        altchaConfig == null ? null : new AltchaCaptchaClient(altchaConfig, rateLimitersCluster, clock);
     final Function<String, CaptchaClient> captchaClientSupplier = spamFilter
         .map(SpamFilter::getCaptchaClientSupplier)
         .orElseGet(() -> {
-          // Tellomi: Cloudflare Turnstile when configured; otherwise upstream's no-op
+          // Tellomi: Cloudflare Turnstile and/or ALTCHA when configured; otherwise upstream's no-op
           final TurnstileCaptchaConfiguration turnstileConfig = config.getTurnstileCaptchaConfiguration();
-          if (turnstileConfig == null) {
+          if (turnstileConfig == null && altchaCaptchaClient == null) {
             log.warn("No captcha clients found; using default (no-op) client as default");
             return ignored -> CaptchaClient.noop();
           }
-          final CaptchaClient turnstileCaptchaClient = new TurnstileCaptchaClient(turnstileConfig);
+          final CaptchaClient turnstileCaptchaClient =
+              turnstileConfig == null ? null : new TurnstileCaptchaClient(turnstileConfig);
           final CaptchaClient noopClient;
-          if (turnstileConfig.allowNoop()) {
+          if (turnstileConfig == null || turnstileConfig.allowNoop()) {
             noopClient = CaptchaClient.noop();
           } else if (turnstileConfig.noopSecret() != null) {
             noopClient = CaptchaClient.secretNoop(turnstileConfig.noopSecret().value());
           } else {
             noopClient = null;
           }
-          log.info("Tellomi: Turnstile captcha client enabled (allowNoop={}, noopSecret={})",
-              turnstileConfig.allowNoop(), turnstileConfig.noopSecret() != null);
+          log.info("Tellomi: captcha clients enabled (turnstile={}, altcha={}, allowNoop={}, noopSecret={})",
+              turnstileConfig != null, altchaCaptchaClient != null,
+              turnstileConfig == null || turnstileConfig.allowNoop(),
+              turnstileConfig != null && turnstileConfig.noopSecret() != null);
+          if (turnstileConfig != null) {
+            // 香港的发布检查（BUILD_SERVER.md）grep 这一行，保留原文
+            log.info("Tellomi: Turnstile captcha client enabled (allowNoop={}, noopSecret={})",
+                turnstileConfig.allowNoop(), turnstileConfig.noopSecret() != null);
+          }
           return scheme -> switch (scheme) {
             case TurnstileCaptchaClient.SCHEME -> turnstileCaptchaClient;
+            case AltchaCaptchaClient.SCHEME -> altchaCaptchaClient;
             case "noop" -> noopClient;
             default -> null;
           };
@@ -1374,6 +1390,11 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     for (Object controller : commonControllers) {
       environment.jersey().register(controller);
       webSocketEnvironment.jersey().register(controller);
+    }
+
+    // Tellomi（ADR-0070 §5.3）：验证页用的 ALTCHA 挑战 + 页面事件。只给同源网页走 HTTP，不进 WebSocket
+    if (altchaCaptchaClient != null) {
+      environment.jersey().register(new TellomiCaptchaController(altchaCaptchaClient));
     }
 
     WebSocketEnvironment<AuthenticatedDevice> provisioningEnvironment = new WebSocketEnvironment<>(environment,
