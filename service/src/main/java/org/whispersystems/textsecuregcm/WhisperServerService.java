@@ -838,7 +838,9 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         phoneNumberRecoveryPasswordsManager, messagePollExecutor,
         retryExecutor, clock, config.getLinkDeviceSecretConfiguration().secret().value(),
         config.getRegistrationTotpConfiguration().maxValidationDelay(),
-            webAuthnCeremonyManager);
+            webAuthnCeremonyManager,
+        // Tellomi (ADR-0066 §6.2): rename cooldown, 180 days unless usernamePolicy.renameCooldown says otherwise
+        UsernamePolicyConfiguration.renameCooldown(config.getUsernamePolicyConfiguration()));
     RemoteConfigsManager remoteConfigsManager = new RemoteConfigsManager(remoteConfigs, config.getRemoteConfigConfiguration().globalConfig());
     APNSender apnSender = new APNSender(apnSenderExecutor, Clock.systemUTC(), config.getApnConfiguration());
     FcmSender fcmSender = new FcmSender(fcmSenderExecutor, config.getFcmConfiguration().credentials().value());

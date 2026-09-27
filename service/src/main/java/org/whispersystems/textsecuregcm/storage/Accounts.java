@@ -146,6 +146,9 @@ public class Accounts {
 
   static final String DELETED_ACCOUNTS_ATTR_ACCOUNT_UUID = "U";
   static final String DELETED_ACCOUNTS_ATTR_EXPIRES = "E";
+  // Tellomi (tellomi/tellomi#1397): the username holds a deleted account left behind, JSON list of Account.UsernameHold;
+  // absent when there are none. Same lifetime as the rest of the item (DELETED_ACCOUNTS_TIME_TO_LIVE).
+  static final String DELETED_ACCOUNTS_ATTR_USERNAME_HOLDS = "UH";
   static final String DELETED_ACCOUNTS_UUID_TO_PNI_INDEX_NAME = "u_to_p";
 
   static final String USERNAME_LINK_TO_UUID_INDEX = "ul_to_u";
@@ -162,7 +165,9 @@ public class Accounts {
    * How long an old username is held for an account after the account initially clears/switches the username
    */
   @VisibleForTesting
-  // Tellomi (ADR-0066, TR-ID-01): 30 days, not upstream's 7 — paired with the 30-day rename cooldown in AccountsManager.
+  // Tellomi (ADR-0066, TR-ID-01): 30 days, not upstream's 7. Also how long a deleted account's username is held
+  // (tellomi/tellomi#1156, see #delete). Deliberately NOT the rename cooldown (AccountsManager, 180 days since owner
+  // 2026-09-27): an account can take back its own old name only while this hold lasts.
   static final Duration USERNAME_HOLD_DURATION = Duration.ofDays(30);
 
   private final Clock clock;
@@ -805,6 +810,19 @@ public class Accounts {
     }
   }
 
+  /// Tellomi (tellomi/tellomi#1397): the holds an account leaves behind when it is deleted — its unexpired holds plus
+  /// its current username, capped at MAX_USERNAME_HOLDS exactly as a clear would (#addToHolds). A hold that drops off
+  /// the list keeps its constraint row, which simply expires.
+  private List<Account.UsernameHold> usernameHoldsLeftBehind(final Account account, final Instant now) {
+    // the account is about to be deleted; this copy only feeds the deleted-accounts record
+    final Account copy = AccountUtil.cloneAccountAsNotStale(account);
+    account.getUsernameHash().ifPresent(usernameHash -> addToHolds(copy, usernameHash, now));
+
+    return copy.getUsernameHolds().stream()
+        .filter(hold -> hold.expirationSecs() > now.getEpochSecond())
+        .toList();
+  }
+
   /**
    * Transaction item to update the usernameConstraintTable to "hold" a usernameHash for an account
    *
@@ -1347,13 +1365,31 @@ public class Accounts {
   }
 
   private TransactWriteItem buildPutDeletedAccount(final UUID aci, final UUID pni) {
+    return buildPutDeletedAccount(aci, pni, List.of());
+  }
+
+  private TransactWriteItem buildPutDeletedAccount(final UUID aci, final UUID pni,
+      final List<Account.UsernameHold> usernameHolds) {
+
+    final Map<String, AttributeValue> item = new HashMap<>(Map.of(
+        DELETED_ACCOUNTS_KEY_ACCOUNT_PNI, AttributeValues.fromString(pni.toString()),
+        DELETED_ACCOUNTS_ATTR_ACCOUNT_UUID, AttributeValues.fromUUID(aci),
+        DELETED_ACCOUNTS_ATTR_EXPIRES, AttributeValues.fromLong(clock.instant().plus(DELETED_ACCOUNTS_TIME_TO_LIVE).getEpochSecond())));
+
+    // Tellomi (tellomi/tellomi#1397): see #delete and #findRecentlyDeletedAccountUsernameHolds
+    if (!usernameHolds.isEmpty()) {
+      try {
+        item.put(DELETED_ACCOUNTS_ATTR_USERNAME_HOLDS,
+            AttributeValues.fromByteArray(SystemMapper.jsonMapper().writeValueAsBytes(usernameHolds)));
+      } catch (final JsonProcessingException e) {
+        throw new IllegalStateException("Could not serialize username holds", e);
+      }
+    }
+
     return TransactWriteItem.builder()
         .put(Put.builder()
             .tableName(deletedAccountsTableName)
-            .item(Map.of(
-                DELETED_ACCOUNTS_KEY_ACCOUNT_PNI, AttributeValues.fromString(pni.toString()),
-                DELETED_ACCOUNTS_ATTR_ACCOUNT_UUID, AttributeValues.fromUUID(aci),
-                DELETED_ACCOUNTS_ATTR_EXPIRES, AttributeValues.fromLong(clock.instant().plus(DELETED_ACCOUNTS_TIME_TO_LIVE).getEpochSecond())))
+            .item(item)
             .build())
         .build();
   }
@@ -1394,6 +1430,35 @@ public class Accounts {
         .build());
 
     return Optional.ofNullable(AttributeValues.getUUID(response.item(), DELETED_ACCOUNTS_ATTR_ACCOUNT_UUID, null));
+  }
+
+  /// Tellomi (tellomi/tellomi#1397, owner 2026-09-27): the username holds that the account recently deleted for this
+  /// PNI left behind (see [#delete]); empty if there is no such account or it left none. They may have expired.
+  ///
+  /// [AccountsManager] gives them to the account created when the same number re-registers within the 30 days, so
+  /// that it (and only it) is treated as the owner of those names again: the rename cooldown lets it take them back,
+  /// and the first username it sets counts as a change. Nothing here is ever sent to a client.
+  public List<Account.UsernameHold> findRecentlyDeletedAccountUsernameHolds(final UUID phoneNumberIdentifier) {
+    final GetItemResponse response = dynamoDbClient.getItem(GetItemRequest.builder()
+        .tableName(deletedAccountsTableName)
+        .consistentRead(true)
+        .key(Map.of(DELETED_ACCOUNTS_KEY_ACCOUNT_PNI, AttributeValues.fromString(phoneNumberIdentifier.toString())))
+        .projectionExpression(DELETED_ACCOUNTS_ATTR_USERNAME_HOLDS)
+        .build());
+
+    final byte[] serialized = AttributeValues.getByteArray(response.item(), DELETED_ACCOUNTS_ATTR_USERNAME_HOLDS, null);
+    if (serialized == null) {
+      return List.of();
+    }
+
+    try {
+      return List.of(SystemMapper.jsonMapper().readValue(serialized, Account.UsernameHold[].class));
+    } catch (final IOException e) {
+      // Losing these only loses the owner's head start on its old names (they stay held by TTL either way); it must
+      // never stop the number from registering.
+      log.warn("Could not read the username holds left by a deleted account", e);
+      return List.of();
+    }
   }
 
   public Optional<UUID> findRecentlyDeletedPhoneNumberIdentifier(final UUID uuid) {
@@ -1443,13 +1508,23 @@ public class Accounts {
           account.getNumber().ifPresent(e164 -> transactWriteItems.add(
               buildDelete(phoneNumberConstraintTableName, ATTR_ACCOUNT_E164, e164)));
 
+          final Instant now = clock.instant();
+
+          // Tellomi (tellomi/tellomi#1156; privacy policy 2.0.0, ADR-0066 §6.2): don't release the username, hold it
+          // for USERNAME_HOLD_DURATION (30 days) — the same row a rename or clear leaves behind. The hold is keyed on
+          // this ACI, so only whoever gets the ACI back can take the name again: the same number re-registering while
+          // the deleted-accounts record written below (also 30 days) still maps its PNI here. Everyone else sees what
+          // any held name looks like: reserve / confirm → not available, lookup → not found. Rows for names this
+          // account had already given up (its username holds) are left alone, as upstream does, and expire by TTL.
+          account.getUsernameHash().ifPresent(usernameHash -> transactWriteItems.add(
+              holdUsernameTransactItem(uuid, usernameHash, now)));
+
           account.getPhoneNumberIdentifier().ifPresent(pni -> {
             transactWriteItems.add(buildDelete(phoneNumberIdentifierConstraintTableName, ATTR_PNI_UUID, pni));
-            transactWriteItems.add(buildPutDeletedAccount(uuid, pni));
+            // Tellomi (tellomi/tellomi#1397): remember which names are now held for this ACI, so the account created if
+            // the same number comes back within the 30 days is their owner again (AccountsManager#create).
+            transactWriteItems.add(buildPutDeletedAccount(uuid, pni, usernameHoldsLeftBehind(account, now)));
           });
-
-          account.getUsernameHash().ifPresent(usernameHash -> transactWriteItems.add(
-              buildDelete(usernamesConstraintTableName, UsernameTable.KEY_USERNAME_HASH, usernameHash)));
 
           transactWriteItems.addAll(additionalWriteItems);
 

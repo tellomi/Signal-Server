@@ -5,6 +5,7 @@
 
 package org.whispersystems.textsecuregcm.storage;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -1538,7 +1539,7 @@ class AccountsManagerTest {
     verify(accounts, never()).reserveUsernameHash(any(), any(), any());
   }
 
-  // ── Tellomi: 30-day rename cooldown (ADR-0066, TR-ID-01) ──
+  // ── Tellomi: rename cooldown (ADR-0066, TR-ID-01; 180 days since owner 2026-09-27) ──
 
   private Account accountThatChangedItsUsername(final Duration ago) {
     // The change time is stored in whole seconds; pin the clock to one so "time left" is exact.
@@ -1557,14 +1558,14 @@ class AccountsManagerTest {
 
     final UsernameChangeCooldownException e = assertThrows(UsernameChangeCooldownException.class,
         () -> accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(TestRandomUtil.nextBytes(32))));
-    assertEquals(AccountsManager.USERNAME_CHANGE_COOLDOWN.minus(Duration.ofDays(1)), e.getRetryAfter());
+    assertEquals(AccountsManager.DEFAULT_USERNAME_CHANGE_COOLDOWN.minus(Duration.ofDays(1)), e.getRetryAfter());
     verify(accounts, never()).reserveUsernameHash(any(), any(), any());
   }
 
   @Test
   void tellomiReserveAfterTheCooldownIsAllowed() throws UsernameHashNotAvailableException {
     final Account account =
-        accountThatChangedItsUsername(AccountsManager.USERNAME_CHANGE_COOLDOWN.plusSeconds(1));
+        accountThatChangedItsUsername(AccountsManager.DEFAULT_USERNAME_CHANGE_COOLDOWN.plusSeconds(1));
     final byte[] wanted = TestRandomUtil.nextBytes(32);
 
     assertArrayEquals(wanted, accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(wanted))
@@ -1618,7 +1619,7 @@ class AccountsManagerTest {
 
     final UsernameChangeCooldownException e = assertThrows(UsernameChangeCooldownException.class,
         () -> accountsManager.reserveUsernameHash(aci, List.of(TestRandomUtil.nextBytes(32))));
-    assertEquals(AccountsManager.USERNAME_CHANGE_COOLDOWN, e.getRetryAfter());
+    assertEquals(AccountsManager.DEFAULT_USERNAME_CHANGE_COOLDOWN, e.getRetryAfter());
     verify(accounts, times(1)).reserveUsernameHash(any(), any(), any());
   }
 
@@ -1630,8 +1631,40 @@ class AccountsManagerTest {
 
     final UsernameChangeCooldownException e = assertThrows(UsernameChangeCooldownException.class,
         () -> accountsManager.reserveUsernameHash(account.getAccountIdentifier(), List.of(TestRandomUtil.nextBytes(32))));
-    // 29 days minus 250 ms left → 29 days exactly, not 29 days minus one second
-    assertEquals(AccountsManager.USERNAME_CHANGE_COOLDOWN.minus(Duration.ofDays(1)), e.getRetryAfter());
+    // one day into the cooldown, minus 250 ms left → whole days exactly, not one second less
+    assertEquals(AccountsManager.DEFAULT_USERNAME_CHANGE_COOLDOWN.minus(Duration.ofDays(1)), e.getRetryAfter());
+  }
+
+  /** The length comes from usernamePolicy.renameCooldown when it is configured (owner 2026-09-27). */
+  @Test
+  void tellomiTheCooldownLengthIsWhatIsConfigured() throws Exception {
+    final Duration configured = Duration.ofDays(7);
+    final List<byte[]> wanted = List.of(TestRandomUtil.nextBytes(32));
+
+    final Account sixDaysAgo = accountThatChangedItsUsername(Duration.ofDays(6));
+    final UsernameChangeCooldownException e = assertThrows(UsernameChangeCooldownException.class,
+        () -> AccountsManager.candidatesAllowedByRenameCooldown(sixDaysAgo, wanted, CLOCK.instant(), configured));
+    assertEquals(Duration.ofDays(1), e.getRetryAfter());
+
+    final Account sevenDaysAgo = accountThatChangedItsUsername(Duration.ofDays(7));
+    assertEquals(wanted,
+        AccountsManager.candidatesAllowedByRenameCooldown(sevenDaysAgo, wanted, CLOCK.instant(), configured));
+  }
+
+  /** tellomi/tellomi#1397: after a re-registration the name being reclaimed is the account's reservation. */
+  @Test
+  void tellomiTheReservedNameIsAllowedDuringTheCooldown() throws Exception {
+    final Account account = accountThatChangedItsUsername(Duration.ofDays(1));
+    final byte[] reclaiming = TestRandomUtil.nextBytes(32);
+    account.setReservedUsernameHash(reclaiming);
+
+    final byte[] fresh = TestRandomUtil.nextBytes(32);
+    assertThat(AccountsManager.candidatesAllowedByRenameCooldown(account, List.of(fresh, reclaiming), CLOCK.instant(),
+        AccountsManager.DEFAULT_USERNAME_CHANGE_COOLDOWN)).containsExactly(reclaiming);
+
+    assertThrows(UsernameChangeCooldownException.class,
+        () -> AccountsManager.candidatesAllowedByRenameCooldown(account, List.of(fresh), CLOCK.instant(),
+            AccountsManager.DEFAULT_USERNAME_CHANGE_COOLDOWN));
   }
 
   @Test

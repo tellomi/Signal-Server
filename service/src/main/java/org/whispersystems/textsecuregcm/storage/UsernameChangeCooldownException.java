@@ -1,5 +1,5 @@
 /*
- * Copyright 2026 Tellomi
+ * Copyright 2026 重庆半格智能科技有限公司
  * SPDX-License-Identifier: AGPL-3.0-only
  */
 
@@ -9,7 +9,8 @@ import java.time.Duration;
 
 /**
  * Tellomi (ADR-0066, TR-ID-01): the account changed its username less than
- * {@link AccountsManager#USERNAME_CHANGE_COOLDOWN} ago and is asking for a name it does not hold.
+ * the rename cooldown ago ({@link AccountsManager#DEFAULT_USERNAME_CHANGE_COOLDOWN} unless configured) and is asking
+ * for a name it does not hold.
  * <p>
  * A subclass of {@link UsernameHashNotAvailableException} so that every existing caller keeps compiling and, at worst,
  * answers "not available". The two public entry points (REST and gRPC) catch it first and answer 429 with
