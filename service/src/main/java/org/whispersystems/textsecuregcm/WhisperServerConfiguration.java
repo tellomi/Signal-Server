@@ -13,6 +13,7 @@ import java.util.Collections;
 import java.util.Map;
 import org.whispersystems.textsecuregcm.attachments.TusConfiguration;
 import org.whispersystems.textsecuregcm.configuration.ApnConfiguration;
+import org.whispersystems.textsecuregcm.configuration.AltchaCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.AppleAppStoreConfiguration;
 import org.whispersystems.textsecuregcm.configuration.AppleDeviceCheckConfiguration;
 import org.whispersystems.textsecuregcm.configuration.AttachmentsConfiguration;
@@ -315,6 +316,11 @@ public class WhisperServerConfiguration extends Configuration {
   @JsonProperty
   private TurnstileCaptchaConfiguration turnstileCaptcha;
 
+  // Tellomi（ADR-0070）：optional; absent = no self-hosted ALTCHA (mainland captcha pages then only have Turnstile)
+  @Valid
+  @JsonProperty
+  private AltchaCaptchaConfiguration altchaCaptcha;
+
   // Tellomi: optional; absent = no username denylist (upstream behaviour)
   @Valid
   @JsonProperty
@@ -611,6 +617,10 @@ public class WhisperServerConfiguration extends Configuration {
 
   public TurnstileCaptchaConfiguration getTurnstileCaptchaConfiguration() {
     return turnstileCaptcha;
+  }
+
+  public AltchaCaptchaConfiguration getAltchaCaptchaConfiguration() {
+    return altchaCaptcha;
   }
 
   public TusConfiguration getTus() {
