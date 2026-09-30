@@ -27,7 +27,10 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.annotation.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.auth.AccountAuthenticator;
 import org.whispersystems.textsecuregcm.auth.AuthenticatedDevice;
 import org.whispersystems.textsecuregcm.auth.grpc.RequireAuthenticationInterceptor;
@@ -57,9 +60,15 @@ import org.whispersystems.textsecuregcm.util.ua.UserAgentUtil;
  */
 public class RemoteDeprecationFilter implements Filter, ServerInterceptor {
 
+  private static final Logger log = LoggerFactory.getLogger(RemoteDeprecationFilter.class);
+
   private final AccountsManager accountsManager;
   private final AccountAuthenticator accountAuthenticator;
   private final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager;
+
+  // Tellomi (tellomi/tellomi#1399): the last configuration instance that was logged as "in effect"
+  private final AtomicReference<DynamicRemoteDeprecationConfiguration> lastLoggedConfiguration =
+      new AtomicReference<>(DynamicRemoteDeprecationConfiguration.DEFAULT);
 
   private static final String DEPRECATED_CLIENT_COUNTER_NAME = name(RemoteDeprecationFilter.class, "deprecated");
   private static final String PENDING_DEPRECATION_COUNTER_NAME = name(RemoteDeprecationFilter.class, "pendingDeprecation");
@@ -127,6 +136,9 @@ public class RemoteDeprecationFilter implements Filter, ServerInterceptor {
 
     final DynamicRemoteDeprecationConfiguration configuration = dynamicConfigurationManager
         .getConfiguration().getRemoteDeprecationConfiguration();
+
+    logIfChanged(configuration);
+
     final Map<ClientPlatform, Semver> minimumVersionsByPlatform = configuration.minimumVersions();
     final Map<ClientPlatform, Semver> versionsPendingDeprecationByPlatform = configuration
         .versionsPendingDeprecation();
@@ -183,6 +195,19 @@ public class RemoteDeprecationFilter implements Filter, ServerInterceptor {
     }
 
     return shouldBlock;
+  }
+
+  /// Tellomi (tellomi/tellomi#1399): logs, once, every new remote deprecation configuration that requests are
+  /// evaluated against. A reloaded dynamic configuration produces a new instance, so every hot reload of a file that
+  /// has a `remoteDeprecation` block leaves one line saying what is actually in effect: that is how an operator sees
+  /// that a rule is live (or that a misspelled key left the block empty). The default configuration (no block) is
+  /// never logged.
+  private void logIfChanged(final DynamicRemoteDeprecationConfiguration configuration) {
+    final DynamicRemoteDeprecationConfiguration previous = lastLoggedConfiguration.get();
+
+    if (configuration != previous && lastLoggedConfiguration.compareAndSet(previous, configuration)) {
+      log.info("Remote deprecation configuration in effect: {}", configuration);
+    }
   }
 
   /// Tellomi (tellomi/tellomi#1399): tests the client's build number (the `Build/<n>` segment of its User-Agent)

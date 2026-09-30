@@ -8,9 +8,18 @@ package org.whispersystems.textsecuregcm.configuration;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.exc.ValueInstantiationException;
+import io.dropwizard.configuration.ConfigurationParsingException;
+import io.dropwizard.configuration.ConfigurationValidationException;
+import io.dropwizard.configuration.FileConfigurationSourceProvider;
+import io.dropwizard.configuration.YamlConfigurationFactory;
+import io.dropwizard.jackson.Jackson;
+import jakarta.validation.Valid;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
+import jakarta.validation.constraints.NotNull;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
@@ -31,6 +40,66 @@ class FileObjectMonitorFactoryTest {
 
   private static S3ObjectMonitorFactory parse(final String yaml) throws Exception {
     return SystemMapper.yamlMapper().readValue(yaml, S3ObjectMonitorFactory.class);
+  }
+
+  // ---- 走 Dropwizard 自己的配置工厂：服务端读静态配置（含 dynamicConfig）的真实路径 ----
+
+  /// `WhisperServerConfiguration.dynamicConfig` 的声明方式
+  public static class Holder {
+
+    @Valid
+    @NotNull
+    @JsonProperty
+    private S3ObjectMonitorFactory dynamicConfig;
+  }
+
+  private static Holder dropwizardParse(final Path directory, final String yaml) throws Exception {
+    final ObjectMapper mapper = Jackson.newObjectMapper();
+    // 和 WhisperServerService.initialize 一样：先套上 SystemMapper 的配置（它关了 FAIL_ON_UNKNOWN_PROPERTIES）
+    SystemMapper.configureMapper(mapper);
+
+    final Path configFile = directory.resolve("server.yml");
+    Files.writeString(configFile, yaml);
+
+    return new YamlConfigurationFactory<>(Holder.class, VALIDATOR, mapper, "dw")
+        .build(new FileConfigurationSourceProvider(), configFile.toString());
+  }
+
+  /// 注意：服务端真实的 `WhisperServerConfiguration` 对未知键是严格的（写错的字段启动前就被拒绝，见 PR 里 `CheckServiceConfigurations` 的实跑），
+  /// 这里的 `Holder` 只有一个字段、没有这层严格性，所以「写错字段被拒」不在这些单测里断言——只测 `type: file` 块自己的解析和校验
+  @Test
+  void dropwizardParsesTypeFile(@TempDir final Path directory) throws Exception {
+    final Holder holder = dropwizardParse(directory, "dynamicConfig:\n  type: file\n  path: /x/dynamic.yml\n");
+
+    assertThat(holder.dynamicConfig).isInstanceOf(FileObjectMonitorFactory.class);
+    assertThat(((FileObjectMonitorFactory) holder.dynamicConfig).path()).isEqualTo("/x/dynamic.yml");
+  }
+
+  @Test
+  void dropwizardStillParsesTheS3BlockWithoutAType(@TempDir final Path directory) throws Exception {
+    final Holder holder = dropwizardParse(directory, """
+        dynamicConfig:
+          s3Region: a-region
+          s3Bucket: a-bucket
+          objectKey: dynamic-config.yaml
+        """);
+
+    assertThat(holder.dynamicConfig).isInstanceOf(MonitoredS3ObjectConfiguration.class);
+  }
+
+  @Test
+  void dropwizardRejectsAMissingPath(@TempDir final Path directory) {
+    assertThatThrownBy(() -> dropwizardParse(directory, "dynamicConfig:\n  type: file\n  refreshInterval: PT10S\n"))
+        .isInstanceOf(ConfigurationValidationException.class)
+        .hasMessageContaining("dynamicConfig.path");
+  }
+
+  @Test
+  void dropwizardRejectsAnIntervalBelowOneSecond(@TempDir final Path directory) {
+    assertThatThrownBy(() -> dropwizardParse(directory,
+        "dynamicConfig:\n  type: file\n  path: /x\n  refreshInterval: PT0S\n"))
+        .isInstanceOf(ConfigurationParsingException.class)
+        .hasMessageContaining("refreshInterval");
   }
 
   @Test

@@ -22,6 +22,9 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.MockClock;
+import io.micrometer.core.instrument.simple.SimpleConfig;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.io.InputStream;
@@ -99,6 +102,14 @@ class FileObjectMonitorTest {
 
   private FileObjectMonitor monitor() {
     return new FileObjectMonitor(file, MAX_SIZE, executor, INTERVAL, registry);
+  }
+
+  private static String readAll(final InputStream inputStream) {
+    try {
+      return new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
+    } catch (final IOException e) {
+      throw new UncheckedIOException(e);
+    }
   }
 
   private FileObjectMonitor startedMonitor(final String initialContent) throws IOException {
@@ -232,8 +243,15 @@ class FileObjectMonitorTest {
     monitor.start(listener);
 
     Files.delete(file);
-    final Process mkfifo = new ProcessBuilder("mkfifo", file.toString()).start();
-    assumeTrue(mkfifo.waitFor() == 0, "mkfifo is not available on this system");
+
+    final Process mkfifo;
+    try {
+      mkfifo = new ProcessBuilder("mkfifo", file.toString()).start();
+    } catch (final IOException e) {
+      assumeTrue(false, "mkfifo is not available on this system");
+      return;
+    }
+    assumeTrue(mkfifo.waitFor() == 0, "mkfifo failed on this system");
 
     assertTimeoutPreemptively(Duration.ofSeconds(5), monitor::poll);
 
@@ -450,36 +468,96 @@ class FileObjectMonitorTest {
 
   // ---- 轮询：监听者出问题 ----
 
+  /// 监听者拒绝一版内容（比如 YAML 的根是 `~`：上游的解析对它抛 `IllegalArgumentException`，而不是计数）：
+  /// 记一条 WARN、计一次，调用方继续用上一份好的；**同一版内容不再重复交付**——重试不会变好，只会每个间隔刷一条带栈的 WARN
   @Test
-  void aListenerThatFailsIsRetriedOnTheNextPoll() throws IOException {
+  void aVersionTheListenerRefusesIsOfferedOnlyOnce() throws IOException {
     write("a: 1\n");
-    final int[] attempts = {0};
+    final List<String> offered = new ArrayList<>();
     final FileObjectMonitor monitor = monitor();
-    monitor.start(inputStream -> {
-      if (attempts[0]++ == 1) {
-        throw new IllegalStateException("transient");
-      }
-      listener.accept(inputStream);
-    });
+    monitor.start(refusingTheNullDocument(offered));
 
-    write("a: 2\n");
-    monitor.poll(); // 第一次看到
-    monitor.poll(); // 交付，监听者抛异常：不往外抛
+    write("~\n");
+    for (int i = 0; i < 6; i++) {
+      monitor.poll();
+    }
+
+    assertThat(offered).as("the refused version is offered exactly once").containsExactly("a: 1\n", "~\n");
     assertThat(errors("listener")).isEqualTo(1);
-    assertThat(received).containsExactly("a: 1\n");
+    assertThat(changes()).as("nothing was delivered").isZero();
+    assertThat(logAppender.list.stream().filter(event -> event.getLevel() == Level.WARN)).hasSize(1);
 
-    monitor.poll(); // 重试，这次成功
-    assertThat(received).containsExactly("a: 1\n", "a: 2\n");
+    // 内容再变了（改对了），照常交付
+    write("a: 2\n");
+    monitor.poll();
+    monitor.poll();
+    assertThat(offered).containsExactly("a: 1\n", "~\n", "a: 2\n");
     assertThat(changes()).isEqualTo(1);
+  }
+
+  /// 「拒绝过」的记忆只管这一版：换成别的内容（交付成功）之后，同一版内容再出现，照样交付一次（也许这回监听者不拒绝了）
+  @Test
+  void aRefusedVersionIsOfferedAgainWhenItComesBackAfterADifferentOne() throws IOException {
+    write("a: 1\n");
+    final List<String> offered = new ArrayList<>();
+    final FileObjectMonitor monitor = monitor();
+    monitor.start(refusingTheNullDocument(offered));
+
+    write("~\n");
+    monitor.poll();
+    monitor.poll();
+    write("a: 2\n");
+    monitor.poll();
+    monitor.poll();
+    write("~\n");
+    monitor.poll();
+    monitor.poll();
+
+    assertThat(offered).containsExactly("a: 1\n", "~\n", "a: 2\n", "~\n");
+    assertThat(errors("listener")).isEqualTo(2);
+  }
+
+  @Test
+  void goingBackToTheLastGoodVersionForgetsTheRefusal() throws IOException {
+    write("a: 1\n");
+    final List<String> offered = new ArrayList<>();
+    final FileObjectMonitor monitor = monitor();
+    monitor.start(refusingTheNullDocument(offered));
+
+    write("~\n");
+    monitor.poll();
+    monitor.poll();
+    write("a: 1\n");
+    monitor.poll();
+    write("~\n");
+    monitor.poll();
+    monitor.poll();
+
+    assertThat(offered).containsExactly("a: 1\n", "~\n", "~\n");
+    assertThat(errors("listener")).isEqualTo(2);
+  }
+
+  private static Consumer<InputStream> refusingTheNullDocument(final List<String> offered) {
+    return inputStream -> {
+      final String content = readAll(inputStream);
+      offered.add(content);
+
+      if (content.startsWith("~")) {
+        throw new IllegalArgumentException("HV000116: The object to be validated must not be null.");
+      }
+    };
   }
 
   /// 周期任务一旦抛出任何东西，`scheduleAtFixedRate` 就再也不会执行它——配置从此悄悄冻住。所以任何东西都不能从任务里抛出来
   @Test
   void theScheduledTaskSurvivesAnythingItsListenerThrows() throws IOException {
     write("a: 1\n");
+    final List<String> offered = new ArrayList<>();
     final boolean[] explode = {false};
     final FileObjectMonitor monitor = monitor();
     monitor.start(inputStream -> {
+      offered.add(readAll(inputStream));
+
       if (explode[0]) {
         throw new StackOverflowError("a pathological file");
       }
@@ -494,12 +572,97 @@ class FileObjectMonitorTest {
       task.getValue().run();
       task.getValue().run();
     }).doesNotThrowAnyException();
+    assertThat(errors("internal")).as("an Error is not a RuntimeException").isEqualTo(1);
 
-    assertThat(errors("internal")).isGreaterThanOrEqualTo(1);
-
-    // 下一轮照常
+    // 拒绝过的这一版不再交付；下一版不同的内容照常交付（任务还活着）
     explode[0] = false;
+    task.getValue().run();
+    task.getValue().run();
+    assertThat(offered).containsExactly("a: 1\n", "a: 2\n");
+
+    write("a: 3\n");
+    task.getValue().run();
+    task.getValue().run();
+    assertThat(offered).containsExactly("a: 1\n", "a: 2\n", "a: 3\n");
+  }
+
+  /// 出错的可能正是指标注册表本身：连「记一笔 internal」也不能让任何东西逃出周期任务
+  @Test
+  void theScheduledTaskSurvivesABrokenMeterRegistry() throws IOException {
+    final MeterRegistry brokenRegistry = new SimpleMeterRegistry() {
+      @Override
+      public Counter counter(final String name, final String... tags) {
+        throw new AssertionError("the registry is broken");
+      }
+    };
+
+    write("a: 1\n");
+    final FileObjectMonitor monitor = new FileObjectMonitor(file, MAX_SIZE, executor, INTERVAL, brokenRegistry);
+    monitor.start(listener);
+
+    final ArgumentCaptor<Runnable> task = ArgumentCaptor.forClass(Runnable.class);
+    verify(executor).scheduleAtFixedRate(task.capture(), anyLong(), anyLong(), any());
+
+    Files.delete(file);
+
     assertThatCode(() -> task.getValue().run()).doesNotThrowAnyException();
+  }
+
+  // ---- stop() 打断正在读的那一轮 ----
+
+  /// `stop()` 用 `cancel(true)` 打断刷新线程：正在读的那一轮不算读失败，什么都不记，中断标志还回去
+  @Test
+  void aPollInterruptedByStopIsNotAFailure() throws IOException {
+    final FileObjectMonitor monitor = startedMonitor("a: 1\n");
+
+    Thread.currentThread().interrupt();
+    try {
+      monitor.poll();
+      assertThat(Thread.currentThread().isInterrupted()).as("the interrupt flag is handed back").isTrue();
+    } finally {
+      Thread.interrupted(); // 清掉，别影响别的用例
+    }
+
+    assertThat(errors("unreadable")).isZero();
+    assertThat(logAppender.list.stream().filter(event -> event.getLevel() == Level.WARN)).isEmpty();
+    assertThat(received).containsExactly("a: 1\n");
+  }
+
+  // ---- 存活指标 ----
+
+  /// 事件计数器只在出事时才动：轮询线程卡死、文件读不了、执行器没了，看起来和「文件没变」一模一样。
+  /// 这个 gauge 只在**成功读到文件**时往前走，停住就是信号
+  @Test
+  void theLastSuccessfulReadGaugeOnlyMovesWhenTheFileWasRead() throws IOException {
+    final MockClock clock = new MockClock();
+    final MeterRegistry clockedRegistry = new SimpleMeterRegistry(SimpleConfig.DEFAULT, clock);
+    clock.addSeconds(1_000);
+
+    write("a: 1\n");
+    final FileObjectMonitor monitor = new FileObjectMonitor(file, MAX_SIZE, executor, INTERVAL, clockedRegistry);
+    monitor.start(listener);
+    assertThat(lastSuccessfulRead(clockedRegistry)).isEqualTo(1_000);
+
+    clock.addSeconds(10);
+    monitor.poll();
+    assertThat(lastSuccessfulRead(clockedRegistry)).isEqualTo(1_010);
+
+    Files.delete(file);
+    clock.addSeconds(10);
+    monitor.poll();
+    clock.addSeconds(10);
+    monitor.poll();
+    assertThat(lastSuccessfulRead(clockedRegistry)).as("stale while the file cannot be read").isEqualTo(1_010);
+
+    write("a: 1\n");
+    clock.addSeconds(10);
+    monitor.poll();
+    assertThat(lastSuccessfulRead(clockedRegistry)).as("the file is readable again").isEqualTo(1_040);
+  }
+
+  private double lastSuccessfulRead(final MeterRegistry meterRegistry) {
+    return meterRegistry.get("chat.FileObjectMonitor.lastSuccessfulReadEpochSeconds")
+        .tag("path", file.toString()).gauge().value();
   }
 
   // ---- 日志 ----

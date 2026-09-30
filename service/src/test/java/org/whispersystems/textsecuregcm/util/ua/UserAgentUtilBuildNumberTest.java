@@ -23,7 +23,7 @@ class UserAgentUtilBuildNumberTest {
     return UserAgentUtil.parseBuildNumber(UserAgentUtil.parseUserAgentString(userAgentString));
   }
 
-  @ParameterizedTest(name = "{0}")
+  @ParameterizedTest
   @MethodSource
   void parseBuildNumber(final String userAgentString, final OptionalLong expected) throws Exception {
     assertThat(buildNumber(userAgentString)).isEqualTo(expected);

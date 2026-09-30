@@ -8,15 +8,22 @@ package org.whispersystems.textsecuregcm.configuration.dynamic;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.vdurmont.semver4j.Semver;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.LoggerFactory;
 import org.whispersystems.textsecuregcm.storage.DynamicConfigurationManager;
 import org.whispersystems.textsecuregcm.util.ua.ClientPlatform;
 
@@ -29,6 +36,31 @@ class DynamicRemoteDeprecationConfigurationTest {
       captcha:
         scoreFloor: 1.0
       """;
+
+  private ListAppender<ILoggingEvent> logAppender;
+  private ch.qos.logback.classic.Logger recordLogger;
+
+  @BeforeEach
+  void attachLogAppender() {
+    recordLogger = (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(DynamicRemoteDeprecationConfiguration.class);
+    recordLogger.setLevel(Level.DEBUG);
+    logAppender = new ListAppender<>();
+    logAppender.start();
+    recordLogger.addAppender(logAppender);
+  }
+
+  @AfterEach
+  void detachLogAppender() {
+    recordLogger.detachAppender(logAppender);
+    recordLogger.setLevel(null);
+  }
+
+  private List<String> warnings() {
+    return logAppender.list.stream()
+        .filter(event -> event.getLevel() == Level.WARN)
+        .map(ILoggingEvent::getFormattedMessage)
+        .toList();
+  }
 
   private static Optional<DynamicConfiguration> parse(final String remoteDeprecationYaml) {
     return DynamicConfigurationManager.parseConfiguration(REQUIRED_CONFIG + remoteDeprecationYaml,
@@ -142,7 +174,7 @@ class DynamicRemoteDeprecationConfigurationTest {
   }
 
   /// 写错的值：整份配置被拒绝（上一份好的保留，见 `DynamicConfigurationManager`），而不是悄悄按「没有」处理
-  @ParameterizedTest(name = "{0}")
+  @ParameterizedTest
   @MethodSource
   void badValuesAreRejected(final String remoteDeprecationYaml) {
     assertThat(parse(remoteDeprecationYaml)).isEmpty();
@@ -207,6 +239,52 @@ class DynamicRemoteDeprecationConfigurationTest {
 
     assertThat(configuration.minimumVersions().values()).doesNotContainNull();
     assertThat(configuration.minimumBuilds().values()).doesNotContainNull();
+  }
+
+  /// 丢空值不能是悄悄的：以前这是请求路径上的 NPE（大声失败），现在每丢一项都要留一条 WARN，运维才看得到「这一项没生效」
+  @Test
+  void everyDroppedBlankEntryIsLoggedAsAWarning() {
+    parseRemoteDeprecation("""
+        remoteDeprecation:
+          minimumVersions:
+            ANDROID:
+          versionsPendingDeprecation:
+            DESKTOP:
+          blockedVersions:
+            ANDROID:
+              -
+              - 1.0.0
+            IOS:
+          minimumBuilds:
+            ANDROID:
+          blockedBuilds:
+            ANDROID:
+              -
+              - 175101
+        """);
+
+    assertThat(warnings()).containsExactlyInAnyOrder(
+        "remoteDeprecation.minimumVersions.ANDROID has no value; treating it as not set",
+        "remoteDeprecation.versionsPendingDeprecation.DESKTOP has no value; treating it as not set",
+        "remoteDeprecation.blockedVersions.ANDROID contains an empty list item; ignoring it",
+        "remoteDeprecation.blockedVersions.IOS has no value; treating it as not set",
+        "remoteDeprecation.minimumBuilds.ANDROID has no value; treating it as not set",
+        "remoteDeprecation.blockedBuilds.ANDROID contains an empty list item; ignoring it");
+  }
+
+  @Test
+  void nothingIsLoggedWhenNothingIsDropped() {
+    parseRemoteDeprecation("""
+        remoteDeprecation:
+          minimumVersions:
+            ANDROID: 1.0.0
+          minimumBuilds:
+            IOS: 37
+          blockedBuilds:
+            ANDROID: [175101]
+        """);
+
+    assertThat(warnings()).isEmpty();
   }
 
   @Test

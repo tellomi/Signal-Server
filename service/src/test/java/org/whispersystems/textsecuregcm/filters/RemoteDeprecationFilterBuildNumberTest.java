@@ -16,6 +16,9 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.google.common.net.HttpHeaders;
 import com.google.common.net.InetAddresses;
 import com.google.protobuf.ByteString;
@@ -45,6 +48,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.signal.chat.rpc.EchoRequest;
+import org.slf4j.LoggerFactory;
 import org.signal.chat.rpc.EchoServiceGrpc;
 import org.whispersystems.textsecuregcm.auth.AccountAuthenticator;
 import org.whispersystems.textsecuregcm.configuration.dynamic.DynamicConfiguration;
@@ -469,6 +473,55 @@ class RemoteDeprecationFilterBuildNumberTest {
         Arguments.argumentSet("blockedBuilds 的元素没写", "remoteDeprecation:\n  blockedBuilds:\n    ANDROID:\n      -\n"),
         Arguments.argumentSet("三个字段都只有键",
             "remoteDeprecation:\n  minimumVersions:\n  minimumBuilds:\n  blockedBuilds:\n"));
+  }
+
+  // ---- 日志：当前生效的规则 ----
+
+  /// 配置热更之后，运维要能看到「服务现在到底按什么规则在判」：每个新的配置实例第一次被请求用到时记一行 INFO；
+  /// 同一个实例不重复记；缺省配置（没有 remoteDeprecation 块）从不记。拼错键名留下的空规则也会在这一行里显出来
+  @Test
+  void theConfigurationInEffectIsLoggedOncePerNewInstanceAndNeverForTheDefault() {
+    final ch.qos.logback.classic.Logger filterLogger =
+        (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(RemoteDeprecationFilter.class);
+    final ListAppender<ILoggingEvent> appender = new ListAppender<>();
+    appender.start();
+    filterLogger.addAppender(appender);
+    filterLogger.setLevel(Level.INFO);
+
+    try {
+      final DynamicConfiguration noRules = parsedConfiguration(NONE);
+      final DynamicConfiguration withRules = parsedConfiguration(MINIMUM_BUILD);
+      final DynamicConfiguration reloaded = parsedConfiguration(BLOCKED_BUILD);
+      final DynamicConfiguration typo = parsedConfiguration("remoteDeprecation:\n  minimumBuild:\n    ANDROID: 1\n");
+
+      @SuppressWarnings("unchecked") final DynamicConfigurationManager<DynamicConfiguration> manager =
+          mock(DynamicConfigurationManager.class);
+      when(manager.getConfiguration())
+          .thenReturn(noRules, noRules, withRules, withRules, withRules, reloaded, reloaded, typo, typo);
+
+      final RemoteDeprecationFilter filter =
+          new RemoteDeprecationFilter(mock(AccountsManager.class), mock(AccountAuthenticator.class), manager);
+
+      for (int i = 0; i < 9; i++) {
+        filter.shouldBlock(UserAgentUtil.maybeParseUserAgentString(ANDROID_175101), null);
+      }
+
+      assertThat(appender.list).extracting(ILoggingEvent::getFormattedMessage).hasSize(3);
+      assertThat(appender.list).extracting(ILoggingEvent::getLevel).containsOnly(Level.INFO);
+      assertThat(appender.list.get(0).getFormattedMessage()).contains("minimumBuilds={ANDROID=175102}");
+      assertThat(appender.list.get(1).getFormattedMessage()).contains("blockedBuilds={ANDROID=[175101]}");
+      // 键名拼错（minimumBuild）：这块配置是空的，日志里一眼能看出来
+      assertThat(appender.list.get(2).getFormattedMessage())
+          .contains("minimumBuilds={}").contains("blockedBuilds={}").contains("minimumVersions={}");
+    } finally {
+      filterLogger.detachAppender(appender);
+      filterLogger.setLevel(null);
+    }
+  }
+
+  private static DynamicConfiguration parsedConfiguration(final String remoteDeprecationYaml) {
+    return DynamicConfigurationManager
+        .parseConfiguration(REQUIRED_CONFIG + remoteDeprecationYaml, DynamicConfiguration.class).orElseThrow();
   }
 
   // ---- 指标：沿用现有 counter，新增标签值，不改已有的 ----

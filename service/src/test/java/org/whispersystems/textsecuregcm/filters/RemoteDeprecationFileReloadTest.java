@@ -13,6 +13,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.verify;
 
 import io.micrometer.core.instrument.Counter;
@@ -295,18 +296,23 @@ class RemoteDeprecationFileReloadTest {
   @Test
   void startingWithAnInvalidFileWaitsForAValidOneInsteadOfUsingDefaults() throws Exception {
     write("not: [valid");
-    final ExecutorService starter = Executors.newSingleThreadExecutor();
+
+    // daemon 线程：上游的 start() 吞掉中断、会一直等——万一这个用例失败，线程也不能拖住整个 JVM
+    final ExecutorService starter = Executors.newSingleThreadExecutor(runnable -> {
+      final Thread thread = new Thread(runnable, "reload-test-starter");
+      thread.setDaemon(true);
+      return thread;
+    });
 
     try {
       final CompletableFuture<Void> started =
           CompletableFuture.runAsync(() -> startWith(executor, Duration.ofSeconds(10)), starter);
 
-      // 给它足够的时间把首次读取和解析做完（它们都在毫秒量级），然后确认它还卡着
-      Thread.sleep(500);
-      assertThat(started).as("server start-up must not proceed on defaults").isNotDone();
-
+      // 监控器把轮询任务交给调度器，说明首次读取和交付都做完了（此时它卡在「等一份合法配置」上）；再确认它确实还没放行
       final ArgumentCaptor<Runnable> task = ArgumentCaptor.forClass(Runnable.class);
-      verify(executor).scheduleAtFixedRate(task.capture(), anyLong(), anyLong(), any());
+      verify(executor, timeout(10_000)).scheduleAtFixedRate(task.capture(), anyLong(), anyLong(), any());
+      Thread.sleep(300);
+      assertThat(started).as("server start-up must not proceed on defaults").isNotDone();
 
       write(MINIMUM_175200);
       task.getValue().run();
@@ -317,6 +323,37 @@ class RemoteDeprecationFileReloadTest {
     } finally {
       starter.shutdownNow();
     }
+  }
+
+  /// YAML 的根是 `~` / `null` / `---`：上游的 `parseConfiguration` 对它抛 `IllegalArgumentException`（HV000116），
+  /// 而不是计一次 parse / validate 错误。首次启动：直接失败，服务起不来
+  @Test
+  void startingWithAFileWhoseYamlRootIsNullFailsFast() throws IOException {
+    write("~\n");
+
+    assertTimeoutPreemptively(Duration.ofSeconds(10), () ->
+        assertThatThrownBy(() -> startWith(executor, Duration.ofSeconds(10)))
+            .isInstanceOf(IllegalArgumentException.class));
+  }
+
+  /// 运行中才出现这样的文件：这一版被拒绝一次（一条 WARN、`error{reason=listener}` 计一次），仍是上一份好的；
+  /// 同一版不再重复交付（以前每个间隔刷一条带栈的 WARN）；改对了照常生效
+  @Test
+  void aFileWhoseYamlRootIsNullIsRefusedOnceAndKeepsTheLastGoodConfiguration() throws IOException {
+    start(MINIMUM_175200);
+
+    write("~\n");
+    pollTimes(2);
+    assertThat(blocks(ANDROID)).as("still the last good configuration").isTrue();
+    assertThat(monitorErrors("listener")).isEqualTo(1);
+
+    pollTimes(5);
+    assertThat(monitorErrors("listener")).as("the same version is not offered again").isEqualTo(1);
+    assertThat(blocks(ANDROID)).isTrue();
+
+    write(MINIMUM_175000);
+    pollTimes(2);
+    assertThat(blocks(ANDROID)).isFalse();
   }
 
   // ---- 真调度器 ----
@@ -334,9 +371,8 @@ class RemoteDeprecationFileReloadTest {
       eventually(() -> blocks(ANDROID), Duration.ofSeconds(10));
 
       Files.delete(file);
-      Thread.sleep(300);
+      eventually(() -> monitorErrors("missing") > 0, Duration.ofSeconds(10));
       assertThat(blocks(ANDROID)).as("a deleted file does not change anything").isTrue();
-      assertThat(monitorErrors("missing")).isGreaterThan(0);
 
       write(MINIMUM_175000);
       eventually(() -> !blocks(ANDROID), Duration.ofSeconds(10));
