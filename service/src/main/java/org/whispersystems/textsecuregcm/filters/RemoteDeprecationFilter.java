@@ -25,6 +25,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.Set;
 import javax.annotation.Nullable;
 import org.whispersystems.textsecuregcm.auth.AccountAuthenticator;
@@ -49,6 +50,10 @@ import org.whispersystems.textsecuregcm.util.ua.UserAgentUtil;
  * version. It may optionally also reject traffic from clients with unrecognized User-Agent strings.
  * If a client platform does not have a configured minimum version, all traffic from that client
  * platform is allowed.
+ * <p>
+ * Tellomi (tellomi/tellomi#1399): a platform may also have a minimum build number and/or blocked build numbers, which
+ * are compared with the {@code Build/<n>} segment of the User-Agent string. Clients whose User-Agent has no build
+ * number (Desktop, older packages) are only judged by version, exactly as before.
  */
 public class RemoteDeprecationFilter implements Filter, ServerInterceptor {
 
@@ -63,6 +68,10 @@ public class RemoteDeprecationFilter implements Filter, ServerInterceptor {
   private static final String EXPIRED_CLIENT_REASON = "expired";
   private static final String BLOCKED_CLIENT_REASON = "blocked";
   private static final String SPQR_NOT_SUPPORTED_REASON = "spqr";
+  // Tellomi (tellomi/tellomi#1399): new reason values for rejections by build number; the existing values above are
+  // unchanged
+  private static final String EXPIRED_BUILD_REASON = "expired_build";
+  private static final String BLOCKED_BUILD_REASON = "blocked_build";
 
   public RemoteDeprecationFilter(final AccountsManager accountsManager,
       final AccountAuthenticator accountAuthenticator,
@@ -167,7 +176,52 @@ public class RemoteDeprecationFilter implements Filter, ServerInterceptor {
       }
     }
 
+    // Tellomi (tellomi/tellomi#1399): build-number rules are evaluated in addition to the version rules above; any hit
+    // blocks
+    if (isRejectedByBuildNumber(userAgent, configuration)) {
+      shouldBlock = true;
+    }
+
     return shouldBlock;
+  }
+
+  /// Tellomi (tellomi/tellomi#1399): tests the client's build number (the `Build/<n>` segment of its User-Agent)
+  /// against the platform's `minimumBuilds` and `blockedBuilds`.
+  ///
+  /// Nothing is looked up unless this platform has a build rule, so with the default (empty) configuration this does
+  /// no work, records nothing and never blocks. A client whose User-Agent carries no (valid) build number is not
+  /// affected by build rules at all; it is judged only by the version rules.
+  ///
+  /// @return `true` if the client's build is below the platform's minimum build or is one of its blocked builds
+  private boolean isRejectedByBuildNumber(final UserAgent userAgent,
+      final DynamicRemoteDeprecationConfiguration configuration) {
+
+    final Long minimumBuild = configuration.minimumBuilds().get(userAgent.platform());
+    final Set<Long> blockedBuilds = configuration.blockedBuilds().get(userAgent.platform());
+
+    if (minimumBuild == null && blockedBuilds == null) {
+      return false;
+    }
+
+    final OptionalLong build = UserAgentUtil.parseBuildNumber(userAgent);
+
+    if (build.isEmpty()) {
+      return false;
+    }
+
+    boolean rejected = false;
+
+    if (blockedBuilds != null && blockedBuilds.contains(build.getAsLong())) {
+      recordDeprecation(userAgent, BLOCKED_BUILD_REASON);
+      rejected = true;
+    }
+
+    if (minimumBuild != null && build.getAsLong() < minimumBuild) {
+      recordDeprecation(userAgent, EXPIRED_BUILD_REASON);
+      rejected = true;
+    }
+
+    return rejected;
   }
 
   /// Tests whether the device identified by the given authentication header (if any) is definitively missing the SPQR
