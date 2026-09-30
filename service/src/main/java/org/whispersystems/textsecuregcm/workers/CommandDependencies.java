@@ -8,6 +8,7 @@ package org.whispersystems.textsecuregcm.workers;
 import com.apple.foundationdb.Database;
 import com.apple.foundationdb.FDB;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.google.common.annotations.VisibleForTesting;
 import io.dropwizard.core.setup.Environment;
 import io.lettuce.core.resource.ClientResources;
 import java.io.ByteArrayInputStream;
@@ -55,6 +56,7 @@ import org.whispersystems.textsecuregcm.push.PushNotificationScheduler;
 import org.whispersystems.textsecuregcm.push.RedisMessageAvailabilityManager;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClient;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClusterClient;
+import org.whispersystems.textsecuregcm.s3.S3AsyncClients;
 import org.whispersystems.textsecuregcm.securestorage.SecureStorageClient;
 import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecoveryClient;
 import org.whispersystems.textsecuregcm.storage.AccountLockManager;
@@ -98,7 +100,6 @@ import org.whispersystems.textsecuregcm.util.ResilienceUtil;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
-import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.s3.S3AsyncClient;
@@ -275,11 +276,7 @@ public record CommandDependencies(
     DynamoDbClient dynamoDbClient = configuration.getDynamoDbClientConfiguration()
         .buildSyncClient(awsCredentialsProvider, new MicrometerAwsSdkMetricPublisher(awsSdkMetricsExecutor, "dynamoDbSyncCommand"));
 
-    final AwsCredentialsProvider cdnCredentialsProvider = configuration.getCdnConfiguration().credentials().build();
-    final S3AsyncClient asyncCdnS3Client = S3AsyncClient.builder()
-        .credentialsProvider(cdnCredentialsProvider)
-        .region(Region.of(configuration.getCdnConfiguration().region()))
-        .build();
+    final S3AsyncClient asyncCdnS3Client = buildCdnS3Client(configuration);
 
 
     PhoneNumberRecoveryPasswords phoneNumberRecoveryPasswords = new PhoneNumberRecoveryPasswords(
@@ -311,10 +308,7 @@ public record CommandDependencies(
         configuration.getDynamoDbTables().getProfileAvatars().getTableName(), RemoveExpiredAccountsCommand.MAX_IDLE_DURATION, clock);
     ProfilesV2 profiles = new ProfilesV2(dynamoDbClient, dynamoDbAsyncClient,
         configuration.getDynamoDbTables().getProfilesV2().getTableName());
-    S3AsyncClient asyncKeysS3Client = S3AsyncClient.builder()
-        .credentialsProvider(awsCredentialsProvider)
-        .region(Region.of(configuration.getPagedSingleUseKEMPreKeyStore().region()))
-        .build();
+    S3AsyncClient asyncKeysS3Client = buildKemPreKeyPageS3Client(configuration, awsCredentialsProvider);
     PagedSingleUseKEMPreKeyStore pagedSingleUseKEMPreKeyStore = new PagedSingleUseKEMPreKeyStore(
         dynamoDbAsyncClient, asyncKeysS3Client,
         configuration.getDynamoDbTables().getPagedKemKeys().getTableName(),
@@ -497,6 +491,18 @@ public record CommandDependencies(
         dynamoDbRecoveryManager,
         fdb,
         accountLockManager);
+  }
+
+  @VisibleForTesting
+  static S3AsyncClient buildCdnS3Client(final WhisperServerConfiguration configuration) {
+    return S3AsyncClients.forCdn(configuration.getCdnConfiguration());
+  }
+
+  @VisibleForTesting
+  static S3AsyncClient buildKemPreKeyPageS3Client(final WhisperServerConfiguration configuration,
+      final AwsCredentialsProvider awsCredentialsProvider) {
+
+    return S3AsyncClients.forKemPreKeyPages(configuration.getPagedSingleUseKEMPreKeyStore(), awsCredentialsProvider);
   }
 
 }

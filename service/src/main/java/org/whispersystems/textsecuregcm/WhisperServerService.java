@@ -253,6 +253,7 @@ import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClient;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClusterClient;
 import org.whispersystems.textsecuregcm.registration.RegistrationServiceClient;
 import org.whispersystems.textsecuregcm.s3.PostPolicyGenerator;
+import org.whispersystems.textsecuregcm.s3.S3AsyncClients;
 import org.whispersystems.textsecuregcm.s3.S3MonitoringSupplier;
 import org.whispersystems.textsecuregcm.securestorage.SecureStorageClient;
 import org.whispersystems.textsecuregcm.securevaluerecovery.SecureValueRecoveryClient;
@@ -367,7 +368,6 @@ import org.whispersystems.websocket.setup.WebSocketEnvironment;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
-import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbAsyncClient;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.s3.S3AsyncClient;
@@ -557,12 +557,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
       environment.lifecycle().manage(new FoundationDBWarmup(faultTolerantDatabasesByName));
     }
 
-    final AwsCredentialsProvider cdnCredentialsProvider = config.getCdnConfiguration().credentials().build();
-    final S3AsyncClient asyncCdnS3Client = S3AsyncClient.builder()
-        .credentialsProvider(cdnCredentialsProvider)
-        .region(Region.of(config.getCdnConfiguration().region()))
-        .endpointOverride(config.getCdnConfiguration().endpointOverride())
-        .build();
+    final S3AsyncClient asyncCdnS3Client = S3AsyncClients.forCdn(config.getCdnConfiguration());
 
     BlockingQueue<Runnable> messageDeletionQueue = new LinkedBlockingQueue<>();
     Metrics.gaugeCollectionSize(name(getClass(), "messageDeletionQueueSize"), Collections.emptyList(),
@@ -598,11 +593,8 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     ProfileAvatars profileAvatars = new ProfileAvatars(dynamoDbClient,
         config.getDynamoDbTables().getProfileAvatars().getTableName(), RemoveExpiredAccountsCommand.MAX_IDLE_DURATION, clock);
 
-    S3AsyncClient asyncKeysS3Client = S3AsyncClient.builder()
-        .credentialsProvider(awsCredentialsProvider)
-        .region(Region.of(config.getPagedSingleUseKEMPreKeyStore().region()))
-        .endpointOverride(config.getPagedSingleUseKEMPreKeyStore().endpointOverride())
-        .build();
+    S3AsyncClient asyncKeysS3Client =
+        S3AsyncClients.forKemPreKeyPages(config.getPagedSingleUseKEMPreKeyStore(), awsCredentialsProvider);
     KeysManager keysManager = new KeysManager(
         new SingleUseECPreKeyStore(dynamoDbAsyncClient, config.getDynamoDbTables().getEcKeys().getTableName()),
         new PagedSingleUseKEMPreKeyStore(
