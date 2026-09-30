@@ -35,8 +35,11 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
+import javax.annotation.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -251,6 +254,100 @@ class RemoteDeprecationFilterBuildNumberTest {
             false, none));
   }
 
+  // ---- 「新旧行为对照」整张表，逐格（PR 描述里那张表的每一格都在这里被断言）----
+
+  /// 表的列：9 种 User-Agent，顺序固定
+  private static final List<String> MATRIX_USER_AGENTS = List.of(
+      ANDROID_175101, ANDROID_175102, ANDROID_NO_BUILD, ANDROID_BAD_BUILD, IOS_37, IOS_36, IOS_0, DESKTOP,
+      UNRECOGNIZED);
+
+  private static final List<String> MATRIX_LABELS = List.of(
+      "Android 175101", "Android 同版本号 175102", "Android 老包（无 Build/）", "Android 老包（坏 Build/）",
+      "iOS 37", "iOS 36", "iOS 0", "Desktop", "认不出的 UA");
+
+  /// 旧代码不认识 minimumBuilds / blockedBuilds——它们是未知键，被静默忽略（`SystemMapper` 关了 FAIL_ON_UNKNOWN_PROPERTIES）——
+  /// 所以「旧」= 同一份配置去掉构建号字段之后的结果。去掉构建号字段后的配置在新旧代码上结果相同，由
+  /// `RemoteDeprecationFilterCompatibilityTest` 逐格守着。
+  private static final String ONLY_VERSION_0_1_3 = """
+      remoteDeprecation:
+        minimumVersions:
+          ANDROID: 0.1.3
+      """;
+
+  private static final String ONLY_VERSION_0_1_0 = """
+      remoteDeprecation:
+        minimumVersions:
+          ANDROID: 0.1.0
+      """;
+
+  private static final String PASS = "放";
+
+  private static String blocked(final String... counters) {
+    return "拦 " + String.join(" + ", counters);
+  }
+
+  private static String describe(final Outcome outcome) {
+    return outcome.block() ? blocked(outcome.deprecated().toArray(String[]::new)) : PASS;
+  }
+
+  private record MatrixRow(String name, String yaml, String yamlWithoutBuildFields, List<String> before,
+                           List<String> after) {
+  }
+
+  private static Stream<Arguments> theWholeComparisonTable() {
+    final List<String> passEverything = Collections.nCopies(MATRIX_USER_AGENTS.size(), PASS);
+
+    // 只有旧字段：新旧相同
+    final List<String> versionsOnly = List.of(
+        blocked("android:expired=1"), blocked("android:expired=1"), blocked("android:expired=1"),
+        blocked("android:expired=1"), PASS, PASS, PASS, blocked("desktop:expired=1"), PASS);
+
+    // 版本规则（0.1.3）对所有 0.1.2 的 Android 包都命中；构建号规则只对带有效构建号的那两个再多记一次 / 不多记
+    final List<String> bothBefore = List.of(
+        blocked("android:expired=1"), blocked("android:expired=1"), blocked("android:expired=1"),
+        blocked("android:expired=1"), PASS, PASS, PASS, PASS, PASS);
+
+    final List<String> bothAfter = List.of(
+        blocked("android:expired=1", "android:expired_build=1"), blocked("android:expired=1"),
+        blocked("android:expired=1"), blocked("android:expired=1"), PASS, PASS, PASS, PASS, PASS);
+
+    final List<String> onlyAndroid175101Blocked = List.of(
+        blocked("android:expired_build=1"), PASS, PASS, PASS, PASS, PASS, PASS, PASS, PASS);
+
+    final List<MatrixRow> rows = List.of(
+        new MatrixRow("无配置", NONE, NONE, passEverything, passEverything),
+        new MatrixRow("只有旧字段 minimumVersions", VERSIONS_ONLY, VERSIONS_ONLY, versionsOnly, versionsOnly),
+        new MatrixRow("minimumBuilds: {ANDROID: 175102}", MINIMUM_BUILD, NONE, passEverything,
+            onlyAndroid175101Blocked),
+        new MatrixRow("blockedBuilds: {ANDROID: [175101]}", BLOCKED_BUILD, NONE, passEverything,
+            List.of(blocked("android:blocked_build=1"), PASS, PASS, PASS, PASS, PASS, PASS, PASS, PASS)),
+        new MatrixRow("minimumVersions {ANDROID: 0.1.3} + minimumBuilds {ANDROID: 175102}", BOTH_MINIMUMS,
+            ONLY_VERSION_0_1_3, bothBefore, bothAfter),
+        new MatrixRow("minimumVersions {ANDROID: 0.1.0} + minimumBuilds {ANDROID: 175102}", VERSION_PASSES_BUILD_FAILS,
+            ONLY_VERSION_0_1_0, passEverything, onlyAndroid175101Blocked),
+        new MatrixRow("minimumBuilds {ANDROID: 175102, IOS: 37, DESKTOP: 5}", MINIMUM_ON_ALL_PLATFORMS, NONE,
+            passEverything,
+            List.of(blocked("android:expired_build=1"), PASS, PASS, PASS, PASS, blocked("ios:expired_build=1"),
+                blocked("ios:expired_build=1"), PASS, PASS)));
+
+    return rows.stream().flatMap(row -> IntStream.range(0, MATRIX_USER_AGENTS.size()).mapToObj(column ->
+        Arguments.argumentSet(row.name() + " / " + MATRIX_LABELS.get(column), row.yaml(),
+            row.yamlWithoutBuildFields(), MATRIX_USER_AGENTS.get(column), row.before().get(column),
+            row.after().get(column))));
+  }
+
+  @ParameterizedTest
+  @MethodSource
+  void theWholeComparisonTable(final String yaml, final String yamlWithoutBuildFields, final String userAgent,
+      final String expectedBefore, final String expectedAfter) {
+
+    assertThat(describe(evaluate(yamlWithoutBuildFields, userAgent)))
+        .as("before: what the old code did (the build fields did not exist, so they were ignored)")
+        .isEqualTo(expectedBefore);
+
+    assertThat(describe(evaluate(yaml, userAgent))).as("after").isEqualTo(expectedAfter);
+  }
+
   // ---- HTTP（499）----
 
   @ParameterizedTest
@@ -401,9 +498,19 @@ class RemoteDeprecationFilterBuildNumberTest {
     assertThat(registry.get("chat.RemoteDeprecationFilter.deprecated")
         .tag("platform", "ios").tag("reason", "blocked_build").counter().count()).isEqualTo(1);
 
-    // 已有的标签值一个都没动、也没被「顺带」记上
-    assertThat(registry.find("chat.RemoteDeprecationFilter.deprecated").tag("reason", "expired").counters()).isEmpty();
-    assertThat(registry.find("chat.RemoteDeprecationFilter.deprecated").tag("reason", "blocked").counters()).isEmpty();
-    assertThat(registry.find("chat.RemoteDeprecationFilter.pendingDeprecation").meters()).isEmpty();
+    // 已有的标签值一个都没动、也没被「顺带」记上。按计数值断言，不按「有没有这个计数器」：
+    // 同一个 JVM 里之前的用例建过的组合计数器，会以 0 值挂到新注册表上，存在与否取决于测试的执行顺序
+    assertThat(totalCount(registry, "chat.RemoteDeprecationFilter.deprecated", "reason", "expired")).isZero();
+    assertThat(totalCount(registry, "chat.RemoteDeprecationFilter.deprecated", "reason", "blocked")).isZero();
+    assertThat(totalCount(registry, "chat.RemoteDeprecationFilter.pendingDeprecation", null, null)).isZero();
+  }
+
+  private static double totalCount(final SimpleMeterRegistry registry, final String meterName,
+      @Nullable final String tagKey, @Nullable final String tagValue) {
+
+    final io.micrometer.core.instrument.search.Search search = registry.find(meterName);
+
+    return (tagKey == null ? search : search.tag(tagKey, tagValue)).counters().stream()
+        .mapToDouble(Counter::count).sum();
   }
 }
