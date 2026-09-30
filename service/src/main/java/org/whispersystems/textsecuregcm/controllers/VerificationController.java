@@ -88,6 +88,8 @@ import org.whispersystems.textsecuregcm.registration.RegistrationServiceClient;
 import org.whispersystems.textsecuregcm.registration.RegistrationServiceException;
 import org.whispersystems.textsecuregcm.registration.TransportNotAllowedException;
 import org.whispersystems.textsecuregcm.registration.VerificationSession;
+import org.whispersystems.textsecuregcm.registration.risk.RegistrationRiskAssessor;
+import org.whispersystems.textsecuregcm.registration.risk.RiskSignals;
 import org.whispersystems.textsecuregcm.spam.RegistrationFraudChecker;
 import org.whispersystems.textsecuregcm.spam.RegistrationFraudChecker.VerificationCheck;
 import org.whispersystems.textsecuregcm.storage.Account;
@@ -141,6 +143,7 @@ public class VerificationController {
   private final RegistrationFraudChecker registrationFraudChecker;
   private final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager;
   private final Clock clock;
+  private final RegistrationRiskAssessor registrationRiskAssessor;
 
   public VerificationController(final RegistrationServiceClient registrationServiceClient,
       final VerificationSessionManager verificationSessionManager,
@@ -153,7 +156,8 @@ public class VerificationController {
       final CarrierDataProvider carrierDataProvider,
       final RegistrationFraudChecker registrationFraudChecker,
       final DynamicConfigurationManager<DynamicConfiguration> dynamicConfigurationManager,
-      final Clock clock) {
+      final Clock clock,
+      final RegistrationRiskAssessor registrationRiskAssessor) {
     this.registrationServiceClient = registrationServiceClient;
     this.verificationSessionManager = verificationSessionManager;
     this.pushNotificationManager = pushNotificationManager;
@@ -166,6 +170,7 @@ public class VerificationController {
     this.registrationFraudChecker = registrationFraudChecker;
     this.dynamicConfigurationManager = dynamicConfigurationManager;
     this.clock = clock;
+    this.registrationRiskAssessor = registrationRiskAssessor;
   }
 
   @POST
@@ -238,6 +243,11 @@ public class VerificationController {
     verificationSession.requestedInformation().add(VerificationSession.Information.CAPTCHA);
 
     verificationSessionManager.insert(verificationSession);
+
+    // Tellomi（ADR-0070 P2）：风控只记录。不改变上面任何一步的结果；评估在后台线程，异常全部吞掉，不会拖慢或搞坏建会话
+    registrationRiskAssessor.sessionCreated(RiskSignals.fromRequest(requestContext,
+        registrationServiceSession.number(), registrationServiceSession.encodedSessionId(),
+        pushTokenAndType.first() != null));
 
     return buildResponse(registrationServiceSession, verificationSession);
   }
@@ -602,6 +612,10 @@ public class VerificationController {
               .build());
     }
 
+    // Tellomi（ADR-0070 P2）：发码前这一步只记录「如果要重新验证会是因为什么」，不改变是否发码
+    registrationRiskAssessor.codeRequested(RiskSignals.fromRequest(requestContext,
+        registrationServiceSession.number(), registrationServiceSession.encodedSessionId(), false));
+
     final MessageTransport messageTransport = verificationCodeRequest.transport().toMessageTransport();
 
     final ClientType clientType = switch (verificationCodeRequest.client()) {
@@ -654,6 +668,10 @@ public class VerificationController {
       logger.error("Registration service failure", e);
       throw new ServerErrorException(Response.Status.INTERNAL_SERVER_ERROR);
     }
+
+    // Tellomi（ADR-0070 P2）：验证码发出去了（上面没抛异常）：记发码数，转化率的分母
+    registrationRiskAssessor.codeSent(
+        RiskSignals.forSession(registrationServiceSession.number(), registrationServiceSession.encodedSessionId()));
 
     accountsManager.getByE164(registrationServiceSession.number())
         .ifPresent(existingAccount -> {
@@ -776,6 +794,11 @@ public class VerificationController {
     }
 
     Metrics.counter(VERIFIED_COUNTER_NAME, tags).increment();
+
+    // Tellomi（ADR-0070 P2）：记验码结果，转化率的分子（验对了才计）
+    registrationRiskAssessor.codeChecked(
+        RiskSignals.forSession(registrationServiceSession.number(), registrationServiceSession.encodedSessionId()),
+        resultSession.verified());
 
     return buildResponse(resultSession, verificationSession);
   }

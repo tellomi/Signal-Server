@@ -79,6 +79,7 @@ import org.whispersystems.textsecuregcm.registration.RegistrationServiceExceptio
 import org.whispersystems.textsecuregcm.registration.RegistrationServiceSenderException;
 import org.whispersystems.textsecuregcm.registration.TransportNotAllowedException;
 import org.whispersystems.textsecuregcm.registration.VerificationSession;
+import org.whispersystems.textsecuregcm.registration.risk.RegistrationRiskAssessor;
 import org.whispersystems.textsecuregcm.spam.RegistrationFraudChecker;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
@@ -133,7 +134,8 @@ class VerificationControllerTest {
       .addResource(
           new VerificationController(registrationServiceClient, verificationSessionManager, pushNotificationManager,
               registrationCaptchaManager, phoneNumberRecoveryPasswordsManager, phoneNumberIdentifiers, rateLimiters, accountsManager,
-              carrierDataProvider, RegistrationFraudChecker.noop(), dynamicConfigurationManager, clock))
+              carrierDataProvider, RegistrationFraudChecker.noop(), dynamicConfigurationManager, clock,
+              RegistrationRiskAssessor.disabled()))
       .build();
 
   @BeforeEach
