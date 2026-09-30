@@ -43,7 +43,10 @@ import org.whispersystems.textsecuregcm.util.InetAddressRange;
 /// @param workerThreads              后台评估线程数（评估不在请求线程上做）
 /// @param queueCapacity              后台队列容量；满了就丢弃这一次记录（只记指标），绝不阻塞请求
 /// @param maxRecordsPerSecond        每秒最多记录多少个事件，超过的丢弃（只记指标）。评估器往限流用的 Redis 里写键，攻击流量（大量不同的
-///                                   IP / 号码建会话）下键数和攻击速率成正比，不设上限就可能挤占这套共享 Redis 的内存；正常注册量远低于此
+///                                   IP / 号码建会话）下键数和攻击速率成正比，不设上限就可能挤占这套共享 Redis 的内存（香港的缓存、推送调度、
+///                                   限流、消息缓存四个逻辑集群是同一个 Valkey，没设 maxmemory）。一次注册最多产生 4 个事件（建会话 / 发码前 /
+///                                   发码后 / 验码后），所以缺省 5 对应每秒约 1 次注册；最坏情况（持续 24 小时的攻击、每个事件的实体都不同）
+///                                   约 5 × 86400 × 3 = 130 万个 24 小时键，按每键约 130 字节估约 170 MB（估算，未实测）
 public record RegistrationRiskConfiguration(@Nullable Boolean enabled,
                                             @NotNull SecretString secret,
                                             @Nullable Integer maxSubnetSessionsPerDay,
@@ -72,7 +75,7 @@ public record RegistrationRiskConfiguration(@Nullable Boolean enabled,
   public static final int DEFAULT_MIN_COHORT_SAMPLES = 20;
   public static final int DEFAULT_WORKER_THREADS = 2;
   public static final int DEFAULT_QUEUE_CAPACITY = 512;
-  public static final int DEFAULT_MAX_RECORDS_PER_SECOND = 20;
+  public static final int DEFAULT_MAX_RECORDS_PER_SECOND = 5;
 
   /// `publishedClientVersions` 里允许的平台名（小写，对应 `ClientPlatform`）
   public static final Set<String> PLATFORMS = Set.of("android", "ios", "desktop");

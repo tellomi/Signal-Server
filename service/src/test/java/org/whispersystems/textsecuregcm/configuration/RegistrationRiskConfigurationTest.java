@@ -56,7 +56,7 @@ class RegistrationRiskConfigurationTest {
     assertThat(configuration.publishedClientVersions()).isEmpty();
     assertThat(configuration.workerThreads()).isEqualTo(2);
     assertThat(configuration.queueCapacity()).isEqualTo(512);
-    assertThat(configuration.maxRecordsPerSecond()).isEqualTo(20);
+    assertThat(configuration.maxRecordsPerSecond()).isEqualTo(5);
   }
 
   @Test
