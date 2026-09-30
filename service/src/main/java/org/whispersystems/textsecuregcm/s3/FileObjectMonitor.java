@@ -269,7 +269,7 @@ public class FileObjectMonitor extends S3ObjectMonitor {
 
       final byte[] content;
 
-      try (final InputStream inputStream = Files.newInputStream(path)) {
+      try (final InputStream inputStream = open(path)) {
         content = inputStream.readNBytes((int) maxSize + 1);
       }
 
@@ -287,6 +287,13 @@ public class FileObjectMonitor extends S3ObjectMonitor {
     } catch (final IOException e) {
       throw new ReadFailure(UNREADABLE, e.getClass().getSimpleName() + ": " + e.getMessage(), e);
     }
+  }
+
+  /// 打开文件读取。单独成方法，只为了测试可以换成一个会抛 `ClosedByInterruptException` 的流：
+  /// 在有些 JDK 上，线程被打断后读普通文件并不抛它，没有这个接缝，「`stop()` 打断了这一轮」的分支就没有任何测试能走到
+  @VisibleForTesting
+  InputStream open(final Path path) throws IOException {
+    return Files.newInputStream(path);
   }
 
   private void recordSuccessfulRead() {

@@ -29,6 +29,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
+import java.nio.channels.ClosedByInterruptException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -39,6 +40,7 @@ import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -610,12 +612,27 @@ class FileObjectMonitorTest {
 
   // ---- stop() 打断正在读的那一轮 ----
 
-  /// `stop()` 用 `cancel(true)` 打断刷新线程：正在读的那一轮不算读失败，什么都不记，中断标志还回去
+  /// `stop()` 用 `cancel(true)` 打断刷新线程：正在读的那一轮不算读失败，什么都不记，中断标志还回去；之后照常工作。
+  /// （用接缝 `open` 注入 `ClosedByInterruptException`：在有些 JDK 上线程被打断后读普通文件并不会抛它，
+  /// 直接 `Thread.interrupt()` 会让这个用例空转——变异检查抓到过一次）
   @Test
   void aPollInterruptedByStopIsNotAFailure() throws IOException {
-    final FileObjectMonitor monitor = startedMonitor("a: 1\n");
+    final AtomicBoolean interruptReads = new AtomicBoolean();
 
-    Thread.currentThread().interrupt();
+    write("a: 1\n");
+    final FileObjectMonitor monitor = new FileObjectMonitor(file, MAX_SIZE, executor, INTERVAL, registry) {
+      @Override
+      InputStream open(final Path path) throws IOException {
+        if (interruptReads.get()) {
+          throw new ClosedByInterruptException();
+        }
+
+        return super.open(path);
+      }
+    };
+    monitor.start(listener);
+
+    interruptReads.set(true);
     try {
       monitor.poll();
       assertThat(Thread.currentThread().isInterrupted()).as("the interrupt flag is handed back").isTrue();
@@ -626,6 +643,13 @@ class FileObjectMonitorTest {
     assertThat(errors("unreadable")).isZero();
     assertThat(logAppender.list.stream().filter(event -> event.getLevel() == Level.WARN)).isEmpty();
     assertThat(received).containsExactly("a: 1\n");
+
+    // 之后照常工作
+    interruptReads.set(false);
+    write("a: 2\n");
+    monitor.poll();
+    monitor.poll();
+    assertThat(received).containsExactly("a: 1\n", "a: 2\n");
   }
 
   // ---- 存活指标 ----
