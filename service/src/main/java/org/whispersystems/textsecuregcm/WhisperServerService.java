@@ -61,6 +61,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -114,6 +115,7 @@ import org.whispersystems.textsecuregcm.captcha.RegistrationCaptchaManager;
 import org.whispersystems.textsecuregcm.captcha.ShortCodeExpander;
 import org.whispersystems.textsecuregcm.captcha.TurnstileCaptchaClient;
 import org.whispersystems.textsecuregcm.configuration.AltchaCaptchaConfiguration;
+import org.whispersystems.textsecuregcm.configuration.RegistrationRiskConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TurnstileCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.BadgeConfiguration;
 import org.whispersystems.textsecuregcm.configuration.FoundationDbExternalClientConfiguration;
@@ -252,6 +254,7 @@ import org.whispersystems.textsecuregcm.redis.ConnectionEventLogger;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClient;
 import org.whispersystems.textsecuregcm.redis.FaultTolerantRedisClusterClient;
 import org.whispersystems.textsecuregcm.registration.RegistrationServiceClient;
+import org.whispersystems.textsecuregcm.registration.risk.RegistrationRiskAssessor;
 import org.whispersystems.textsecuregcm.s3.PostPolicyGenerator;
 import org.whispersystems.textsecuregcm.s3.S3AsyncClients;
 import org.whispersystems.textsecuregcm.s3.S3MonitoringSupplier;
@@ -1129,6 +1132,24 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
 
     final RegistrationCaptchaManager registrationCaptchaManager = new RegistrationCaptchaManager(captchaChecker);
 
+    // Tellomi（ADR-0070 P2）：注册风控只记录——算「这次建会话本来会不会放行」，只写指标和日志，不改变任何用户可见的行为。
+    // 没有 registrationRisk 配置块（或 enabled: false）= 空操作，和上游一样；评估在自己的后台线程池里、队列有界，满了就丢，绝不阻塞请求
+    final RegistrationRiskConfiguration registrationRiskConfig = config.getRegistrationRiskConfiguration();
+    final RegistrationRiskAssessor registrationRiskAssessor;
+    if (registrationRiskConfig == null || !registrationRiskConfig.enabled()) {
+      registrationRiskAssessor = RegistrationRiskAssessor.disabled();
+      log.info("Tellomi: registration risk assessor disabled");
+    } else {
+      registrationRiskAssessor = RegistrationRiskAssessor.create(registrationRiskConfig, rateLimitersCluster, clock,
+          ExecutorServiceBuilder.of(environment, "registrationRisk")
+              .minThreads(registrationRiskConfig.workerThreads())
+              .maxThreads(registrationRiskConfig.workerThreads())
+              .workQueue(new ArrayBlockingQueue<>(registrationRiskConfig.queueCapacity()))
+              .build());
+      log.info("Tellomi: registration risk assessor enabled (record only; datacenterNetworks={}, publishedClientVersions={})",
+          registrationRiskConfig.datacenterNetworks().size(), registrationRiskConfig.publishedClientVersions().keySet());
+    }
+
     final RateLimitChallengeManager rateLimitChallengeManager = new RateLimitChallengeManager(pushChallengeManager,
         captchaChecker, rateLimiters, spamFilter.map(SpamFilter::getRateLimitChallengeListener).stream().toList());
 
@@ -1369,7 +1390,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         new VerificationController(registrationServiceClient, new VerificationSessionManager(verificationSessions),
             pushNotificationManager, registrationCaptchaManager, phoneNumberRecoveryPasswordsManager,
             phoneNumberIdentifiers, rateLimiters, accountsManager, carrierDataProvider, registrationFraudChecker,
-            dynamicConfigurationManager, clock),
+            dynamicConfigurationManager, clock, registrationRiskAssessor),
         new SubscriptionController(clock, config.getSubscription(), config.getOneTimeDonations(),
             config.getLoginPurchase(), subscriptionManager, stripeManager, braintreeManager, googlePlayBillingManager,
             appleAppStoreManager,
