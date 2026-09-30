@@ -6,6 +6,8 @@
 package org.whispersystems.textsecuregcm.configuration.dynamic;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonSetter;
+import com.fasterxml.jackson.annotation.Nulls;
 import jakarta.validation.Valid;
 import java.math.BigDecimal;
 import java.util.Collections;
@@ -29,7 +31,11 @@ public class DynamicConfiguration {
   @Valid
   private Map<String, RateLimiterConfig> limits = new HashMap<>();
 
+  // Tellomi（tellomi/tellomi#1399）：`remoteDeprecation:` 只写键、没有内容（比如子项全被注释掉）时，YAML 给的是 null，
+  // Jackson 会把字段覆盖成 null，过滤器在每个请求上读它就是 NPE；配置可以在线热更之后，这是一次手滑就全站 500。
+  // SKIP = 显式的 null 不覆盖缺省值，效果等同于没写这一块
   @JsonProperty
+  @JsonSetter(nulls = Nulls.SKIP)
   @Valid
   private DynamicRemoteDeprecationConfiguration remoteDeprecation = DynamicRemoteDeprecationConfiguration.DEFAULT;
 
