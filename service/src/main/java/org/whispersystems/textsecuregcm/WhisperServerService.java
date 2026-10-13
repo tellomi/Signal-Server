@@ -98,6 +98,7 @@ import org.whispersystems.textsecuregcm.auth.ExternalServiceCredentialsGenerator
 import org.whispersystems.textsecuregcm.auth.IdlePrimaryDeviceAuthenticatedWebSocketUpgradeFilter;
 import org.whispersystems.textsecuregcm.auth.PhoneVerificationTokenManager;
 import org.whispersystems.textsecuregcm.auth.RegistrationLockVerificationManager;
+import org.whispersystems.textsecuregcm.auth.TellomiFeedTokens;
 import org.whispersystems.textsecuregcm.auth.webauthn.WebAuthnCeremonyManager;
 import org.whispersystems.textsecuregcm.auth.grpc.ProhibitAuthenticationInterceptor;
 import org.whispersystems.textsecuregcm.auth.grpc.RequireAuthenticationInterceptor;
@@ -115,6 +116,7 @@ import org.whispersystems.textsecuregcm.captcha.RegistrationCaptchaManager;
 import org.whispersystems.textsecuregcm.captcha.ShortCodeExpander;
 import org.whispersystems.textsecuregcm.captcha.TurnstileCaptchaClient;
 import org.whispersystems.textsecuregcm.configuration.AltchaCaptchaConfiguration;
+import org.whispersystems.textsecuregcm.configuration.TellomiFeedConfiguration;
 import org.whispersystems.textsecuregcm.configuration.RegistrationRiskConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TurnstileCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.BadgeConfiguration;
@@ -151,6 +153,7 @@ import org.whispersystems.textsecuregcm.controllers.SecureValueRecovery2Controll
 import org.whispersystems.textsecuregcm.controllers.StickerController;
 import org.whispersystems.textsecuregcm.controllers.SubscriptionController;
 import org.whispersystems.textsecuregcm.controllers.TellomiAccountDeletionController;
+import org.whispersystems.textsecuregcm.controllers.TellomiFeedController;
 import org.whispersystems.textsecuregcm.controllers.TellomiCaptchaController;
 import org.whispersystems.textsecuregcm.controllers.VerificationController;
 import org.whispersystems.textsecuregcm.currency.CoinGeckoClient;
@@ -1410,6 +1413,16 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     // Tellomi（ADR-0070 §5.3）：验证页用的 ALTCHA 挑战 + 页面事件。只给同源网页走 HTTP，不进 WebSocket
     if (altchaCaptchaClient != null) {
       environment.jersey().register(new TellomiCaptchaController(altchaCaptchaClient));
+    }
+
+    // Tellomi（ADR-0071 §5.3）：动态的内容引擎凭证、好友声明、受众名单。和别的已鉴权接口一样，HTTP 和 WebSocket 都注册
+    final TellomiFeedConfiguration tellomiFeedConfig = config.getTellomiFeedConfiguration();
+    if (tellomiFeedConfig != null) {
+      final TellomiFeedController tellomiFeedController = new TellomiFeedController(accountsManager,
+          new TellomiFeedTokens(tellomiFeedConfig.signingKey().value(), tellomiFeedConfig.pseudonymKey().value()),
+          tellomiFeedConfig.cnHostSuffixes(), asnInfoProviderSupplier, clock);
+      environment.jersey().register(tellomiFeedController);
+      webSocketEnvironment.jersey().register(tellomiFeedController);
     }
 
     WebSocketEnvironment<AuthenticatedDevice> provisioningEnvironment = new WebSocketEnvironment<>(environment,

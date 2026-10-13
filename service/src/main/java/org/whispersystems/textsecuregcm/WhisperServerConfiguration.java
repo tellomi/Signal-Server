@@ -69,6 +69,7 @@ import org.whispersystems.textsecuregcm.configuration.SubscriptionConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TlsKeyStoreConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TotpConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TurnConfiguration;
+import org.whispersystems.textsecuregcm.configuration.TellomiFeedConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TurnstileCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.UsernamePolicyConfiguration;
 import org.whispersystems.textsecuregcm.configuration.UnidentifiedDeliveryConfiguration;
@@ -326,6 +327,11 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @JsonProperty
   private RegistrationRiskConfiguration registrationRisk;
+
+  // Tellomi（ADR-0071 §5.3）：optional; absent = no /v1/tellomi/feed endpoints (动态的内容引擎凭证)
+  @Valid
+  @JsonProperty
+  private TellomiFeedConfiguration tellomiFeed;
 
   // Tellomi: optional; absent = no username denylist (upstream behaviour)
   @Valid
@@ -627,6 +633,10 @@ public class WhisperServerConfiguration extends Configuration {
 
   public AltchaCaptchaConfiguration getAltchaCaptchaConfiguration() {
     return altchaCaptcha;
+  }
+
+  public TellomiFeedConfiguration getTellomiFeedConfiguration() {
+    return tellomiFeed;
   }
 
   public RegistrationRiskConfiguration getRegistrationRiskConfiguration() {
