@@ -1672,8 +1672,8 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     for (final AccountDeletionListener listener : deletionListeners) {
       try {
         listener.onAccountCreatedWithRecycledAci(accountIdentifier);
-      } catch (final Throwable t) {
-        logger.warn("Account deletion listener failed ({})", t.getClass().getSimpleName());
+      } catch (final Exception e) {
+        logger.warn("Account deletion listener failed ({})", e.getClass().getSimpleName());
       }
     }
   }
@@ -1682,9 +1682,10 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     for (final AccountDeletionListener listener : deletionListeners) {
       try {
         listener.onAccountDeleted(accountIdentifier);
-      } catch (final Throwable t) {
+      } catch (final Exception e) {
         // the account is already deleted; never turn a listener's failure into a failed deletion. Log the class only.
-        logger.warn("Account deletion listener failed ({})", t.getClass().getSimpleName());
+        // Errors (OutOfMemoryError, …) are not swallowed.
+        logger.warn("Account deletion listener failed ({})", e.getClass().getSimpleName());
       }
     }
   }

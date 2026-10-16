@@ -132,10 +132,10 @@ public class TellomiEngineAccountDeletionNotifier implements AccountsManager.Acc
         Metrics.counter(RESULT_COUNTER, "kind", "delete", "result", "dropped").increment();
         log.error("Tellomi engine deletion: outbox full, a deletion notice was dropped; reconciliation must cover it");
       }
-    } catch (final Throwable t) {
-      // must not break account deletion, whatever happens here
+    } catch (final Exception e) {
+      // must not break account deletion; Errors (OutOfMemoryError, …) are not swallowed
       Metrics.counter(RESULT_COUNTER, "kind", "delete", "result", "dropped").increment();
-      log.error("Tellomi engine deletion: could not queue a deletion notice ({})", t.getClass().getSimpleName());
+      log.error("Tellomi engine deletion: could not queue a deletion notice ({})", e.getClass().getSimpleName());
     }
   }
 
@@ -148,8 +148,8 @@ public class TellomiEngineAccountDeletionNotifier implements AccountsManager.Acc
         Metrics.counter(SWEEP_CANCELLED_COUNTER).increment();
         log.info("Tellomi engine deletion: a pending second delete was cancelled (the account identifier was recycled)");
       }
-    } catch (final Throwable t) {
-      log.error("Tellomi engine deletion: could not cancel a second delete ({})", t.getClass().getSimpleName());
+    } catch (final Exception e) {
+      log.error("Tellomi engine deletion: could not cancel a second delete ({})", e.getClass().getSimpleName());
     }
   }
 

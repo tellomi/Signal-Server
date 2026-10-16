@@ -1445,7 +1445,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
       final TellomiEngineAccountDeletionNotifier engineDeletionNotifier = new TellomiEngineAccountDeletionNotifier(
           tellomiEngineDeletionConfig, engineDeletionTokens::pseudonym,
           new InMemoryEngineDeletionOutbox(tellomiEngineDeletionConfig.maxPending()),
-          engineDeletionClient::delete, clock, ThreadLocalRandom.current()::nextDouble, engineDeletionExecutor);
+          engineDeletionClient::delete, clock, () -> ThreadLocalRandom.current().nextDouble(), engineDeletionExecutor);
       accountsManager.addDeletionListener(engineDeletionNotifier);
       engineDeletionNotifier.start();
       log.warn("Tellomi engine deletion is enabled with the in-memory outbox: pending notices are lost on restart");
