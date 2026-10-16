@@ -22,7 +22,7 @@ import org.whispersystems.textsecuregcm.storage.AccountsManager;
  *                       this true so that a bad deploy fails loudly instead of quietly accepting {@code admin.01}.
  * @param renameCooldown how long after changing its username an account must wait before changing it again
  *                       (ISO-8601, e.g. {@code P180D}); absent = {@link AccountsManager#DEFAULT_USERNAME_CHANGE_COOLDOWN}.
- *                       This is not the old-name hold, which stays 30 days (Accounts#USERNAME_HOLD_DURATION).
+ *                       This is not the old-name hold, which is 7 days (Accounts#USERNAME_HOLD_DURATION).
  */
 public record UsernamePolicyConfiguration(@NotBlank String denylistPath,
                                           boolean required,

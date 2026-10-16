@@ -153,7 +153,9 @@ public class Accounts {
 
   static final String USERNAME_LINK_TO_UUID_INDEX = "ul_to_u";
 
-  static final Duration DELETED_ACCOUNTS_TIME_TO_LIVE = Duration.ofDays(30);
+  // Tellomi (owner D9, 2026-10-17; ADR-0066 §6.2 amended): 7 days, was 30. How long a deleted account's record keeps
+  // its ACI (and the username holds it left) for the same number re-registering — the "deletion cool-down" window.
+  static final Duration DELETED_ACCOUNTS_TIME_TO_LIVE = Duration.ofDays(7);
 
   /**
    * Maximum number of temporary username holds an account can have on recently used usernames
@@ -165,10 +167,11 @@ public class Accounts {
    * How long an old username is held for an account after the account initially clears/switches the username
    */
   @VisibleForTesting
-  // Tellomi (ADR-0066, TR-ID-01): 30 days, not upstream's 7. Also how long a deleted account's username is held
-  // (tellomi/tellomi#1156, see #delete). Deliberately NOT the rename cooldown (AccountsManager, 180 days since owner
-  // 2026-09-27): an account can take back its own old name only while this hold lasts.
-  static final Duration USERNAME_HOLD_DURATION = Duration.ofDays(30);
+  // Tellomi (ADR-0066, TR-ID-01): 7 days since owner D9 (2026-10-17; was 30, now the same as upstream). Also how long
+  // a deleted account's username is held (tellomi/tellomi#1156, see #delete). Deliberately NOT the rename cooldown
+  // (AccountsManager, 180 days since owner 2026-09-27): an account can take back its own old name only while this hold
+  // lasts.
+  static final Duration USERNAME_HOLD_DURATION = Duration.ofDays(7);
 
   private final Clock clock;
 
@@ -1435,7 +1438,7 @@ public class Accounts {
   /// Tellomi (tellomi/tellomi#1397, owner 2026-09-27): the username holds that the account recently deleted for this
   /// PNI left behind (see [#delete]); empty if there is no such account or it left none. They may have expired.
   ///
-  /// [AccountsManager] gives them to the account created when the same number re-registers within the 30 days, so
+  /// [AccountsManager] gives them to the account created when the same number re-registers within the 7 days, so
   /// that it (and only it) is treated as the owner of those names again: the rename cooldown lets it take them back,
   /// and the first username it sets counts as a change. Nothing here is ever sent to a client.
   public List<Account.UsernameHold> findRecentlyDeletedAccountUsernameHolds(final UUID phoneNumberIdentifier) {
@@ -1511,9 +1514,9 @@ public class Accounts {
           final Instant now = clock.instant();
 
           // Tellomi (tellomi/tellomi#1156; privacy policy 2.0.0, ADR-0066 §6.2): don't release the username, hold it
-          // for USERNAME_HOLD_DURATION (30 days) — the same row a rename or clear leaves behind. The hold is keyed on
+          // for USERNAME_HOLD_DURATION (7 days) — the same row a rename or clear leaves behind. The hold is keyed on
           // this ACI, so only whoever gets the ACI back can take the name again: the same number re-registering while
-          // the deleted-accounts record written below (also 30 days) still maps its PNI here. Everyone else sees what
+          // the deleted-accounts record written below (also 7 days) still maps its PNI here. Everyone else sees what
           // any held name looks like: reserve / confirm → not available, lookup → not found. Rows for names this
           // account had already given up (its username holds) are left alone, as upstream does, and expire by TTL.
           account.getUsernameHash().ifPresent(usernameHash -> transactWriteItems.add(
@@ -1522,7 +1525,7 @@ public class Accounts {
           account.getPhoneNumberIdentifier().ifPresent(pni -> {
             transactWriteItems.add(buildDelete(phoneNumberIdentifierConstraintTableName, ATTR_PNI_UUID, pni));
             // Tellomi (tellomi/tellomi#1397): remember which names are now held for this ACI, so the account created if
-            // the same number comes back within the 30 days is their owner again (AccountsManager#create).
+            // the same number comes back within the 7 days is their owner again (AccountsManager#create).
             transactWriteItems.add(buildPutDeletedAccount(uuid, pni, usernameHoldsLeftBehind(account, now)));
           });
 
