@@ -10,6 +10,7 @@ import com.google.common.net.HttpHeaders;
 import io.dropwizard.jersey.errors.LoggingExceptionMapper;
 import jakarta.inject.Provider;
 import jakarta.ws.rs.core.Context;
+import java.util.Objects;
 import org.glassfish.jersey.server.ContainerRequest;
 import org.slf4j.Logger;
 import org.whispersystems.textsecuregcm.util.ua.UnrecognizedUserAgentException;
@@ -42,7 +43,9 @@ public class LoggingUnhandledExceptionMapper extends LoggingExceptionMapper<Thro
       // request shouldn’t be `null`, but it is technically possible
       requestMethod = request.get().getMethod();
       requestPath = UriInfoUtil.getPathTemplate(request.get().getUriInfo());
-      userAgent = request.get().getHeaderString(HttpHeaders.USER_AGENT);
+      // Tellomi (tellomi/tellomi#1682): no User-Agent header means null here; keep "missing" so the log line below
+      // cannot throw and turn a 5xx (and its headers, e.g. Retry-After) into a bare 500.
+      userAgent = Objects.requireNonNullElse(request.get().getHeaderString(HttpHeaders.USER_AGENT), userAgent);
 
       // streamline the user-agent if it is recognized
       final UserAgent ua = UserAgentUtil.parseUserAgentString(userAgent);
