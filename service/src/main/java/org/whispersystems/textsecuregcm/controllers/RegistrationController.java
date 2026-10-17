@@ -145,10 +145,14 @@ public class RegistrationController {
     return this;
   }
 
-  /// 403 + `tellomiRestriction`（和发送被拒同一个形状）。只在证明了号码 / 账号是自己的之后调，不让别人探出谁被暂停了。
+  /// 422 + `tellomiRestriction`（和发送被拒同一个形状）。只在证明了号码 / 账号是自己的之后调，不让别人探出谁被暂停了。
+  ///
+  /// 用 422 不用 403：注册接口的 403 在客户端是「恢复密码不对」——安卓新注册流程在验证码这一步收到它直接 `error(...)`
+  /// 闪退（feature/registration VerificationCodeViewModel），iOS 会悄悄重开会话。422 在三端都是一条通用错误提示，
+  /// 第三刀再读 body 显示说明（ADR-0078 §3.4）。
   private void rejectIfSuspended(final Optional<TellomiAccountRestrictions.Restriction> restriction) {
     restriction.ifPresent(r -> {
-      throw new WebApplicationException(TellomiRestrictionSpamChecker.forbidden(r));
+      throw new WebApplicationException(TellomiRestrictionSpamChecker.withExplanation(422, r));
     });
   }
 

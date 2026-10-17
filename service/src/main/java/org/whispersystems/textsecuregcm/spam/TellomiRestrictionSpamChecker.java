@@ -102,6 +102,11 @@ public class TellomiRestrictionSpamChecker implements SpamChecker {
 
   /// 403 + 说明（被处置的档位、到什么时候、申诉邮箱、案件号）。不含举报人、举报次数（ADR-0078 第四节）。
   public static Response forbidden(final Restriction restriction) {
+    return withExplanation(Response.Status.FORBIDDEN.getStatusCode(), restriction);
+  }
+
+  /// 指定状态码 + 同样的说明（注册接口用 422，见 RegistrationController）。
+  public static Response withExplanation(final int status, final Restriction restriction) {
     final Map<String, Object> body = new LinkedHashMap<>();
     body.put("level", restriction.level().code());
     body.put("until", restriction.until().getEpochSecond());
@@ -109,7 +114,7 @@ public class TellomiRestrictionSpamChecker implements SpamChecker {
     if (restriction.caseId() != null) {
       body.put("case", restriction.caseId());
     }
-    return Response.status(Response.Status.FORBIDDEN)
+    return Response.status(status)
         .type(MediaType.APPLICATION_JSON_TYPE)
         .entity(Map.of("tellomiRestriction", body))
         .build();

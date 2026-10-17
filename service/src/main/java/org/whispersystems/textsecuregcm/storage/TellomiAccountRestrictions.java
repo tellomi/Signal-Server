@@ -65,7 +65,8 @@ public class TellomiAccountRestrictions {
     STRANGER("stranger"),
     /// 限制全部发送：上一档 + 不再签发送者证书（手上的证书过期后密封发送也发不出去）
     ALL("all"),
-    /// 暂停：发送同 [#ALL]；账号鉴权失败（所有设备掉线、登不上），同一号码重新注册被拒。解除后原设备照常登录
+    /// 暂停：发送同 [#ALL]；账号鉴权失败（所有设备掉线、登不上，客户端进入已注销状态），同一号码重新注册被拒。
+    /// 解除后用同一号码重新注册回到同一个账号
     SUSPENDED("suspended");
 
     private final String code;

@@ -56,7 +56,11 @@ public class AccountAuthenticator implements Authenticator<BasicCredentials, Aut
     this.clock = clock;
   }
 
-  /// Tellomi（ADR-0078 §3.3）：「暂停」的账号鉴权失败——所有设备掉线、登不上。不动设备的鉴权令牌，所以解除后原设备照常登录。
+  /// Tellomi（ADR-0078 §3.3）：「暂停」的账号鉴权失败——所有设备掉线、登不上。
+  ///
+  /// 不动设备的鉴权令牌，但 WebSocket 鉴权失败回的是 403（WebSocketResourceProviderFactory），libsignal 把它当成设备已注销：
+  /// 安卓 / iOS 进入「需要重新注册」、Mac 进入「已解除关联」。解除暂停后，安卓 / iOS 用同一号码重新注册回到同一个账号，
+  /// Mac 重新关联；没切到注销状态的连接（REST 401）解除后直接恢复。
   public AccountAuthenticator withTellomiRestrictions(@Nullable final TellomiAccountRestrictions tellomiRestrictions) {
     this.tellomiRestrictions = tellomiRestrictions;
     return this;

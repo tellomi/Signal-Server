@@ -502,7 +502,8 @@ class RegistrationControllerTest {
         .request()
         .header(HttpHeaders.AUTHORIZATION, AuthHelper.getProvisioningAuthHeader(NUMBER, PASSWORD))
         .post(Entity.json(requestJson))) {
-      assertEquals(403, response.getStatus());
+      // 422 不是 403：客户端把注册的 403 当成「恢复密码不对」（安卓新注册流程会闪退）
+      assertEquals(422, response.getStatus());
       final Map<?, ?> restriction = (Map<?, ?>) response.readEntity(Map.class).get("tellomiRestriction");
       assertEquals("suspended", restriction.get("level"));
       assertEquals(until.getEpochSecond(), ((Number) restriction.get("until")).longValue());
