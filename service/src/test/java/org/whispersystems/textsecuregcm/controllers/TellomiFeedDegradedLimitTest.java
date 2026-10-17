@@ -82,6 +82,7 @@ class TellomiFeedDegradedLimitTest {
   private static final RateLimiters rateLimiters = mock(RateLimiters.class);
   private static final RateLimiter friendLimiter = mock(RateLimiter.class);
   private static final RateLimiter audienceLimiter = mock(RateLimiter.class);
+  private static final RateLimiter authLimiter = mock(RateLimiter.class);
   private static final RateLimiter friendIpLimiter = mock(RateLimiter.class);
   private static final RateLimiter audienceIpLimiter = mock(RateLimiter.class);
   /// Switched per test: AsnInfoProvider.EMPTY (degraded) or a non-empty provider (table loaded).
@@ -109,11 +110,12 @@ class TellomiFeedDegradedLimitTest {
 
   @BeforeEach
   void setUp() {
-    reset(accountsManager, rateLimiters, friendLimiter, audienceLimiter, friendIpLimiter, audienceIpLimiter, LOADED);
+    reset(accountsManager, rateLimiters, friendLimiter, audienceLimiter, authLimiter, friendIpLimiter, audienceIpLimiter, LOADED);
     provider.set(AsnInfoProvider.EMPTY);
     when(LOADED.lookup(any())).thenReturn(Optional.empty());
     when(rateLimiters.getTellomiFeedFriendAssertionLimiter()).thenReturn(friendLimiter);
     when(rateLimiters.getTellomiFeedAudienceListLimiter()).thenReturn(audienceLimiter);
+    when(rateLimiters.getTellomiFeedAuthLimiter()).thenReturn(authLimiter);
     when(rateLimiters.getTellomiFeedFriendAssertionIpLimiter()).thenReturn(friendIpLimiter);
     when(rateLimiters.getTellomiFeedAudienceListIpLimiter()).thenReturn(audienceIpLimiter);
     when(accountsManager.getByAccountIdentifier(any(UUID.class))).thenReturn(Optional.of(mock(Account.class)));
@@ -214,7 +216,7 @@ class TellomiFeedDegradedLimitTest {
   }
 
   @Test
-  void emptyTableDeleteAndAuthStayUnlimited() throws Exception {
+  void emptyTableDeleteStaysUnlimitedAndAuthKeepsOnlyItsPerAccountLimit() throws Exception {
     try (final Response response = request("/v1/tellomi/feed/friend-assertions/" + UUID.randomUUID()).delete()) {
       assertThat(response.getStatus()).isEqualTo(200);
     }
@@ -223,6 +225,8 @@ class TellomiFeedDegradedLimitTest {
       assertThat(response.getStatus()).isEqualTo(200);
     }
     verifyNoInteractions(friendIpLimiter, audienceIpLimiter, friendLimiter, audienceLimiter);
+    // SF-4: /auth has its own per-account limiter and, unlike the two routes above, no extra per-IP layer
+    verify(authLimiter, times(1)).validate(AuthHelper.VALID_UUID);
   }
 
   @Test

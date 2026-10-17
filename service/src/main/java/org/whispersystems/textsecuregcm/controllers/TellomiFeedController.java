@@ -164,8 +164,14 @@ public class TellomiFeedController {
           """)
   @ApiResponse(responseCode = "200", description = "The credential", useReturnTypeSchema = true)
   @ApiResponse(responseCode = "401", description = "Account authentication check failed")
+  @ApiResponse(responseCode = "429", description = "Too many credential requests from this account. Retry-After (whole seconds) says when to retry")
+  @ApiResponse(responseCode = "503", description = "The rate limiter's store is unavailable. Retry-After says when to retry")
   public FeedCredential getCredential(@Auth final AuthenticatedDevice auth,
-      @Context final ContainerRequestContext requestContext) {
+      @Context final ContainerRequestContext requestContext) throws RateLimitExceededException {
+
+    // 审计 SF-4：按账号限流，防出错的客户端死循环反复取（凭证本身只是一次便宜的 HMAC，没有存在性探测，限流器挂了就放行）。
+    // 先限流再查账号。这里不加按 IP 的一层：和好友声明不同，这个接口没有放大（一次一个 HMAC）。
+    validateAccount("auth", rateLimiters.getTellomiFeedAuthLimiter(), auth.accountIdentifier());
 
     final Account account = accountsManager.getByAccountIdentifier(auth.accountIdentifier())
         .orElseThrow(() -> new WebApplicationException(Response.Status.UNAUTHORIZED));

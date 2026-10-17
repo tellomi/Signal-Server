@@ -104,4 +104,33 @@ class TellomiFeedRateLimitersTest {
     assertThat(audienceIp.bucketSize()).isGreaterThan(audience.bucketSize());
     assertThat(audienceIp.failOpen()).isEqualTo(audience.failOpen());
   }
+
+  @Test
+  void authLimiterHasItsDocumentedDefaultsAndFailsOpen() {
+    final RateLimiterConfig auth = rateLimiters().getTellomiFeedAuthLimiter().config();
+
+    assertThat(auth).isEqualTo(new RateLimiterConfig(60, Duration.ofMinutes(1), true));
+    assertThat(RateLimiters.For.TELLOMI_FEED_AUTH.id()).isEqualTo("tellomiFeedAuth");
+    // sustained rate: one permit per minute = 60 credentials an hour per account; clients fetch about one an hour
+    assertThat(Duration.ofHours(1).dividedBy(auth.permitRegenerationDuration())).isEqualTo(60);
+    // a cheap HMAC with no account-existence oracle: a dead limiter store must not stop everyone from getting credentials
+    assertThat(auth.failOpen()).isTrue();
+  }
+
+  @Test
+  void authLimiterIsConfigurableAtRuntimeAndIndependentOfTheOtherFeedLimiters() {
+    final RateLimiterConfig override = new RateLimiterConfig(3, Duration.ofMinutes(10), true);
+    final Map<String, RateLimiterConfig> limits = new HashMap<>();
+    when(configuration.getLimits()).thenReturn(limits);
+
+    final RateLimiters rateLimiters = rateLimiters();
+    final RateLimiter auth = rateLimiters.getTellomiFeedAuthLimiter();
+    limits.put(RateLimiters.For.TELLOMI_FEED_AUTH.id(), override);
+
+    assertThat(auth.config()).isEqualTo(override);
+    assertThat(rateLimiters.getTellomiFeedFriendAssertionLimiter().config())
+        .isEqualTo(RateLimiters.For.TELLOMI_FEED_FRIEND_ASSERTION.defaultConfig());
+    assertThat(rateLimiters.getTellomiFeedAudienceListLimiter().config())
+        .isEqualTo(RateLimiters.For.TELLOMI_FEED_AUDIENCE_LIST.defaultConfig());
+  }
 }

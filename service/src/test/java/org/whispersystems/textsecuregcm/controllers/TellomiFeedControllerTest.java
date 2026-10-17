@@ -71,6 +71,7 @@ class TellomiFeedControllerTest {
   private static final RateLimiters rateLimiters = mock(RateLimiters.class);
   private static final RateLimiter friendLimiter = mock(RateLimiter.class);
   private static final RateLimiter audienceLimiter = mock(RateLimiter.class);
+  private static final RateLimiter authLimiter = mock(RateLimiter.class);
 
   private static final ResourceExtension resources = ResourceExtension.builder()
       .addProvider(AuthHelper.getAuthFilter())
@@ -98,9 +99,10 @@ class TellomiFeedControllerTest {
 
   @BeforeEach
   void setUp() {
-    reset(accountsManager, asnInfoProvider, account, rateLimiters, friendLimiter, audienceLimiter);
+    reset(accountsManager, asnInfoProvider, account, rateLimiters, friendLimiter, audienceLimiter, authLimiter);
     when(rateLimiters.getTellomiFeedFriendAssertionLimiter()).thenReturn(friendLimiter);
     when(rateLimiters.getTellomiFeedAudienceListLimiter()).thenReturn(audienceLimiter);
+    when(rateLimiters.getTellomiFeedAuthLimiter()).thenReturn(authLimiter);
     when(account.getNumber()).thenReturn(Optional.of("+14150000000"));
     when(accountsManager.getByAccountIdentifier(AuthHelper.VALID_UUID)).thenReturn(Optional.of(account));
     when(asnInfoProvider.lookup(any())).thenReturn(Optional.empty());
@@ -474,12 +476,73 @@ class TellomiFeedControllerTest {
     }
   }
 
+  // ---- audit SF-4: GET /auth is limited per account (its own limiter; the other feed limiters are not involved) ----
+
   @Test
-  void credentialIsNotRateLimitedByTheFeedLimiters() throws Exception {
-    // /auth is a cheap HMAC with no existence oracle; it is intentionally not covered by B-9 (see notes).
+  void credentialIsLimitedPerCallingAccountByItsOwnLimiter() throws Exception {
     try (final Response response = request("/v1/tellomi/feed/auth").get()) {
       assertThat(response.getStatus()).isEqualTo(200);
     }
+    verify(authLimiter).validate(AuthHelper.VALID_UUID);
     verifyNoInteractions(friendLimiter, audienceLimiter);
+  }
+
+  @Test
+  void credentialOverTheLimitIsTooManyRequestsWithRetryAfterAndNoToken() throws Exception {
+    doThrow(new RateLimitExceededException(Duration.ofSeconds(42))).when(authLimiter).validate(any(UUID.class));
+
+    try (final Response response = request("/v1/tellomi/feed/auth").get()) {
+      assertThat(response.getStatus()).isEqualTo(429);
+      // whole seconds, what Android / iOS read for `auth_throttled`
+      assertThat(response.getHeaderString("Retry-After")).isEqualTo("42");
+      assertThat(response.hasEntity() ? response.readEntity(String.class) : "").doesNotContain("token");
+    }
+    // limited before anything else: no account lookup, no signing work
+    verifyNoInteractions(accountsManager);
+    verifyNoInteractions(friendLimiter, audienceLimiter);
+  }
+
+  @Test
+  void credentialRetryAfterIsAnIntegerNumberOfSeconds() throws Exception {
+    doThrow(new RateLimitExceededException(Duration.ofMillis(5400))).when(authLimiter).validate(any(UUID.class));
+
+    try (final Response response = request("/v1/tellomi/feed/auth").get()) {
+      assertThat(response.getStatus()).isEqualTo(429);
+      assertThat(response.getHeaderString("Retry-After")).matches("[0-9]+");
+    }
+  }
+
+  @Test
+  void credentialLimiterStoreDownIsServiceUnavailableWithoutAToken() throws Exception {
+    // the production limiter is failOpen = true, which swallows a store error and lets the request through (see
+    // TellomiFeedRateLimitersTest); anything that still escapes is a dependency outage: 503 + Retry-After, not a bare 500
+    doThrow(new RuntimeException("redis down")).when(authLimiter).validate(any(UUID.class));
+
+    try (final Response response = request("/v1/tellomi/feed/auth").get()) {
+      assertThat(response.getStatus()).isEqualTo(503);
+      assertThat(response.getHeaderString("Retry-After")).isEqualTo("30");
+      assertThat(response.hasEntity() ? response.readEntity(String.class) : "").doesNotContain("token");
+    }
+  }
+
+  @Test
+  void aDifferentAccountsLimitDoesNotAffectThisOne() throws Exception {
+    // the limiter is keyed by the caller's ACI: only calls for the other account are refused
+    final UUID other = UUID.randomUUID();
+    doThrow(new RateLimitExceededException(Duration.ofSeconds(5))).when(authLimiter).validate(other);
+
+    try (final Response response = request("/v1/tellomi/feed/auth").get()) {
+      assertThat(response.getStatus()).isEqualTo(200);
+    }
+    verify(authLimiter).validate(AuthHelper.VALID_UUID);
+    verify(authLimiter, never()).validate(other);
+  }
+
+  @Test
+  void otherRoutesAreStillNotCoveredByTheAuthLimiter() throws Exception {
+    try (final Response response = request("/v1/tellomi/feed/friend-assertions/" + UUID.randomUUID()).delete()) {
+      assertThat(response.getStatus()).isEqualTo(200);
+    }
+    verifyNoInteractions(authLimiter);
   }
 }
