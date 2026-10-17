@@ -40,6 +40,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Optional;
 import java.util.UUID;
 import javax.annotation.Nullable;
@@ -145,10 +146,9 @@ public class RegistrationController {
   }
 
   /// 403 + `tellomiRestriction`（和发送被拒同一个形状）。只在证明了号码 / 账号是自己的之后调，不让别人探出谁被暂停了。
-  private void rejectIfSuspended(final Optional<Instant> until) {
-    until.ifPresent(u -> {
-      throw new WebApplicationException(TellomiRestrictionSpamChecker.forbidden(
-          new TellomiAccountRestrictions.Restriction(TellomiAccountRestrictions.Level.SUSPENDED, u)));
+  private void rejectIfSuspended(final Optional<TellomiAccountRestrictions.Restriction> restriction) {
+    restriction.ifPresent(r -> {
+      throw new WebApplicationException(TellomiRestrictionSpamChecker.forbidden(r));
     });
   }
 
@@ -276,9 +276,9 @@ public class RegistrationController {
 
     if (tellomiRestrictions != null) {
       rejectIfSuspended(Util.getAlternateForms(number).stream()
-          .map(tellomiRestrictions::numberBlockedUntil)
+          .map(tellomiRestrictions::numberBlock)
           .flatMap(Optional::stream)
-          .max(Instant::compareTo));
+          .max(Comparator.comparing(TellomiAccountRestrictions.Restriction::until)));
     }
 
     rateLimiters.getRegistrationLimiter().validate(number);
@@ -463,8 +463,7 @@ public class RegistrationController {
 
     if (tellomiRestrictions != null) {
       rejectIfSuspended(tellomiRestrictions.get(accountIdentifier)
-          .filter(restriction -> restriction.level() == TellomiAccountRestrictions.Level.SUSPENDED)
-          .map(TellomiAccountRestrictions.Restriction::until));
+          .filter(restriction -> restriction.level() == TellomiAccountRestrictions.Level.SUSPENDED));
     }
 
     if (!registrationRequest.skipDeviceTransfer() && existingAccount.hasCapability(DeviceCapability.TRANSFER)) {

@@ -123,7 +123,22 @@ class TellomiAccountRestrictionsTest {
         TellomiAccountRestrictions.KEY_ACCOUNT, AttributeValues.fromUUID(account),
         TellomiAccountRestrictions.KEY_SORT, AttributeValues.fromString(TellomiAccountRestrictions.NUMBER),
         TellomiAccountRestrictions.ATTR_NUMBER_HASH, AttributeValues.fromByteArray(hash),
-        TellomiAccountRestrictions.ATTR_UNTIL, AttributeValues.fromLong(until.getEpochSecond()));
+        TellomiAccountRestrictions.ATTR_UNTIL, AttributeValues.fromLong(until.getEpochSecond()),
+        TellomiAccountRestrictions.ATTR_CASE, AttributeValues.fromString("case-7"));
+  }
+
+  @Test
+  void theCaseIdTravelsWithTheRestrictionWhenPresent() {
+    final UUID withCase = UUID.randomUUID(), withoutCase = UUID.randomUUID();
+    final Map<String, AttributeValue> item = new java.util.HashMap<>(item(withCase, "current", "all", NOW.plus(Duration.ofDays(30))));
+    item.put(TellomiAccountRestrictions.ATTR_CASE, AttributeValues.fromString("20261017-abcd1234"));
+    when(dynamoDbClient.scan(any(ScanRequest.class))).thenReturn(ScanResponse.builder().items(List.of(
+        item, item(withoutCase, "current", "all", NOW.plus(Duration.ofDays(30))))).build());
+
+    restrictions.refresh();
+
+    assertEquals("20261017-abcd1234", restrictions.get(withCase).orElseThrow().caseId());
+    assertEquals(null, restrictions.get(withoutCase).orElseThrow().caseId());
   }
 
   @Test
@@ -141,12 +156,13 @@ class TellomiAccountRestrictionsTest {
     withKey.refresh();
 
     assertTrue(withKey.isSuspended(account));
-    assertEquals(NOW.plus(Duration.ofDays(30)), withKey.numberBlockedUntil("+8613800000003").orElseThrow());
-    assertTrue(withKey.numberBlockedUntil("+8613800000004").isEmpty(), "expired");
-    assertTrue(withKey.numberBlockedUntil("+8613800000005").isEmpty(), "never blocked");
+    assertEquals(NOW.plus(Duration.ofDays(30)), withKey.numberBlock("+8613800000003").orElseThrow().until());
+    assertEquals("case-7", withKey.numberBlock("+8613800000003").orElseThrow().caseId());
+    assertTrue(withKey.numberBlock("+8613800000004").isEmpty(), "expired");
+    assertTrue(withKey.numberBlock("+8613800000005").isEmpty(), "never blocked");
 
     clock.pin(NOW.plus(Duration.ofDays(30)));
-    assertTrue(withKey.numberBlockedUntil("+8613800000003").isEmpty(), "lapses at the deadline");
+    assertTrue(withKey.numberBlock("+8613800000003").isEmpty(), "lapses at the deadline");
   }
 
   @Test
@@ -155,7 +171,7 @@ class TellomiAccountRestrictionsTest {
         numberItem(UUID.randomUUID(), TellomiAccountRestrictions.numberHash(KEY, "+8613800000003"), NOW.plus(Duration.ofDays(30)))
     )).build());
     restrictions.refresh();
-    assertTrue(restrictions.numberBlockedUntil("+8613800000003").isEmpty());
+    assertTrue(restrictions.numberBlock("+8613800000003").isEmpty());
   }
 
   @Test

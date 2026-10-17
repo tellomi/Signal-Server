@@ -52,6 +52,8 @@ public class TellomiAccountRestrictions {
   public static final String ATTR_LEVEL = "L";
   /// 截止时间（epoch 秒）；到了自动失效
   public static final String ATTR_UNTIL = "U";
+  /// 案件号（《投诉举报处理规则》第三十二节：申诉时提供「对应处置编号」）；告诉当事人用
+  public static final String ATTR_CASE = "C";
   /// 暂停时拦重新注册的号码条目
   public static final String NUMBER = "number";
   /// 号码的带密钥哈希（32 字节）
@@ -90,10 +92,15 @@ public class TellomiAccountRestrictions {
     }
   }
 
-  public record Restriction(Level level, Instant until) {
+  /// @param caseId 案件号；老条目没有时为 null
+  public record Restriction(Level level, Instant until, @Nullable String caseId) {
+
+    public Restriction(final Level level, final Instant until) {
+      this(level, until, null);
+    }
   }
 
-  private record Snapshot(Map<UUID, Restriction> accounts, Map<String, Instant> numbers) {
+  private record Snapshot(Map<UUID, Restriction> accounts, Map<String, Restriction> numbers) {
   }
 
   private static final String REFRESH_COUNTER_NAME = name(TellomiAccountRestrictions.class, "refresh");
@@ -138,13 +145,13 @@ public class TellomiAccountRestrictions {
     return get(accountIdentifier).map(restriction -> restriction.level() == Level.SUSPENDED).orElse(false);
   }
 
-  /// 这个号码被暂停拦着重新注册的话，拦到什么时候。没配 numberHashKey 时永远是空。
-  public Optional<Instant> numberBlockedUntil(final String e164) {
+  /// 这个号码被暂停拦着重新注册的话，是哪一条（档位固定是暂停）。没配 numberHashKey 时永远是空。
+  public Optional<Restriction> numberBlock(final String e164) {
     if (numberHashKey == null) {
       return Optional.empty();
     }
-    final Instant until = snapshot.numbers().get(HexFormat.of().formatHex(numberHash(numberHashKey, e164)));
-    return until != null && until.isAfter(clock.instant()) ? Optional.of(until) : Optional.empty();
+    final Restriction block = snapshot.numbers().get(HexFormat.of().formatHex(numberHash(numberHashKey, e164)));
+    return block != null && block.until().isAfter(clock.instant()) ? Optional.of(block) : Optional.empty();
   }
 
   /// `HMAC-SHA256(key, 号码的 UTF-8)`；香港 `deploy/hk/restrict.py` 用同一个算法写条目。
@@ -162,7 +169,7 @@ public class TellomiAccountRestrictions {
   public void refresh() {
     try {
       final Map<UUID, Restriction> fresh = new HashMap<>();
-      final Map<String, Instant> numbers = new HashMap<>();
+      final Map<String, Restriction> numbers = new HashMap<>();
       final Instant now = clock.instant();
       Map<String, AttributeValue> startKey = null;
       do {
@@ -174,7 +181,7 @@ public class TellomiAccountRestrictions {
         for (final Map<String, AttributeValue> item : page.items()) {
           parse(item, now).ifPresent(entry -> fresh.put(entry.getKey(), entry.getValue()));
           parseNumber(item, now).ifPresent(entry -> numbers.merge(entry.getKey(), entry.getValue(),
-              (a, b) -> a.isAfter(b) ? a : b));
+              (a, b) -> a.until().isAfter(b.until()) ? a : b));
         }
         startKey = page.hasLastEvaluatedKey() && !page.lastEvaluatedKey().isEmpty() ? page.lastEvaluatedKey() : null;
       } while (startKey != null);
@@ -213,13 +220,19 @@ public class TellomiAccountRestrictions {
       if (account == null || level.isEmpty() || !until.isAfter(now)) {
         return Optional.empty();
       }
-      return Optional.of(Map.entry(account, new Restriction(level.get(), until)));
+      return Optional.of(Map.entry(account, new Restriction(level.get(), until, caseId(item))));
     } catch (final RuntimeException e) {
       return Optional.empty();
     }
   }
 
-  static Optional<Map.Entry<String, Instant>> parseNumber(final Map<String, AttributeValue> item, final Instant now) {
+  @Nullable
+  private static String caseId(final Map<String, AttributeValue> item) {
+    final AttributeValue value = item.get(ATTR_CASE);
+    return value != null && value.s() != null && !value.s().isBlank() ? value.s() : null;
+  }
+
+  static Optional<Map.Entry<String, Restriction>> parseNumber(final Map<String, AttributeValue> item, final Instant now) {
     try {
       if (!NUMBER.equals(item.get(KEY_SORT).s())) {
         return Optional.empty();
@@ -229,7 +242,7 @@ public class TellomiAccountRestrictions {
       if (hash.length != 32 || !until.isAfter(now)) {
         return Optional.empty();
       }
-      return Optional.of(Map.entry(HexFormat.of().formatHex(hash), until));
+      return Optional.of(Map.entry(HexFormat.of().formatHex(hash), new Restriction(Level.SUSPENDED, until, caseId(item))));
     } catch (final RuntimeException e) {
       return Optional.empty();
     }

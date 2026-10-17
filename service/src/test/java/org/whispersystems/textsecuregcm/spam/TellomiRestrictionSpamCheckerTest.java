@@ -72,7 +72,17 @@ class TellomiRestrictionSpamCheckerTest {
     assertEquals("stranger", body.get("level"));
     assertEquals(UNTIL.getEpochSecond(), body.get("until"));
     assertEquals("abuse@tellomi.app", body.get("appeal"));
+    assertTrue(!body.containsKey("case"), "old entries without a case id");
     verify(delegate, never()).checkForIndividualRecipientSpamHttp(any(), any(), any(), any(), any());
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void theCaseIdIsIncludedForTheAppeal() {
+    final Response response = TellomiRestrictionSpamChecker.forbidden(new Restriction(Level.ALL, UNTIL, "20261017-abcd1234"));
+    final Map<String, Object> body = (Map<String, Object>) ((Map<String, Object>) response.getEntity()).get("tellomiRestriction");
+    assertEquals("20261017-abcd1234", body.get("case"));
+    assertEquals(java.util.Set.of("level", "until", "appeal", "case"), body.keySet(), "no reporter, no report count");
   }
 
   @Test

@@ -490,7 +490,8 @@ class RegistrationControllerTest {
   @ValueSource(booleans = {true, false})
   void tellomiSuspendedNumberCannotRegisterAgain(final boolean useSessionVerification) {
     final Instant until = CLOCK.instant().plus(Duration.ofDays(30)).truncatedTo(ChronoUnit.SECONDS);
-    when(tellomiRestrictions.numberBlockedUntil(NUMBER)).thenReturn(Optional.of(until));
+    when(tellomiRestrictions.numberBlock(NUMBER)).thenReturn(Optional.of(new TellomiAccountRestrictions.Restriction(
+        TellomiAccountRestrictions.Level.SUSPENDED, until, "20261017-abcd1234")));
 
     final String requestJson = useSessionVerification
         ? requestJson("sessionId")
@@ -505,6 +506,7 @@ class RegistrationControllerTest {
       final Map<?, ?> restriction = (Map<?, ?>) response.readEntity(Map.class).get("tellomiRestriction");
       assertEquals("suspended", restriction.get("level"));
       assertEquals(until.getEpochSecond(), ((Number) restriction.get("until")).longValue());
+      assertEquals("20261017-abcd1234", restriction.get("case"));
     }
 
     verify(accountsManager, never()).create(any(), any(), any(), any(), any(), any());
