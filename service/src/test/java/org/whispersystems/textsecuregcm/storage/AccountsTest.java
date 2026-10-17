@@ -2334,7 +2334,7 @@ class AccountsTest {
     assertEquals(originalUsernameConstraints, regeneratedUsernameConstraints);
   }
 
-  // ── Tellomi (#1156): a deleted account's username is held for 30 days (privacy policy 2.0.0, ADR-0066 §6.2) ──
+  // ── Tellomi (#1156): a deleted account's username is held for USERNAME_HOLD_DURATION, 7 days (owner D9; ADR-0066 §6.1c) ──
 
   /// Sets USERNAME_HASH_1 on a new account, deletes the account, and returns the (now deleted) account.
   private Account deleteAccountWithUsername() throws UsernameHashNotAvailableException {
@@ -2403,7 +2403,7 @@ class AccountsTest {
 
     clock.pin(Instant.EPOCH.plus(Accounts.USERNAME_HOLD_DURATION).minusSeconds(1));
 
-    // What AccountsManager#create does for a number whose account was deleted in the last 30 days: reuse the ACI.
+    // What AccountsManager#create does for a number whose account was deleted in the last 7 days: reuse the ACI.
     assertThat(accounts.findRecentlyDeletedAccountIdentifier(pni)).hasValue(deleted.getAccountIdentifier());
     final Account reRegistered = generateAccount(deleted.getNumber().orElseThrow(), deleted.getAccountIdentifier(), pni);
     createAccount(reRegistered);

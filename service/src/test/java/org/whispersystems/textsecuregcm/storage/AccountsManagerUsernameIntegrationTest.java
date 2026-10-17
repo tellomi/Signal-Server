@@ -521,24 +521,26 @@ class AccountsManagerUsernameIntegrationTest {
     account = setUsername(account, USERNAME_HASH_1);
     account = setUsername(account, USERNAME_HASH_2);
 
-    final java.time.Instant tenDaysLater = clock.instant().plus(java.time.Duration.ofDays(10));
-    clock.pin(tenDaysLater);
+    // Two days before the hold on USERNAME_HASH_1 runs out: still ours to take back.
+    final java.time.Instant insideTheHold = clock.instant().plus(Accounts.USERNAME_HOLD_DURATION).minus(java.time.Duration.ofDays(2));
+    clock.pin(insideTheHold);
     try {
       account = setUsername(account, USERNAME_HASH_1);
-      assertEquals(java.util.Optional.of(java.time.Instant.ofEpochSecond(tenDaysLater.getEpochSecond())),
+      assertEquals(java.util.Optional.of(java.time.Instant.ofEpochSecond(insideTheHold.getEpochSecond())),
           account.getUsernameChangedAt());
 
       final UUID aci = account.getAccountIdentifier();
       final UsernameChangeCooldownException e = assertThrows(UsernameChangeCooldownException.class,
           () -> accountsManager.reserveUsernameHash(aci, List.of(TestRandomUtil.nextBytes(32))));
       assertTrue(e.getRetryAfter().compareTo(AccountsManager.DEFAULT_USERNAME_CHANGE_COOLDOWN.minusSeconds(1)) >= 0,
-          "the cooldown restarted at the take-back, so about 30 days are left: " + e.getRetryAfter());
+          "the cooldown restarted at the take-back, so a whole cooldown is left: " + e.getRetryAfter());
     } finally {
       clock.unpin();
     }
   }
 
-  // ── Tellomi (#1156): deleting an account holds its username for 30 days; only the same number gets it back ──
+  // ── Tellomi (#1156): deleting an account holds its username for USERNAME_HOLD_DURATION (7 days, owner D9 2026-10-17);
+  // only the same number gets it back ──
 
   /// Creates an account for `number` with USERNAME_HASH_1 and deletes it the way every deletion path does.
   private Account deleteAccountWithUsername(final String number) throws Exception {
@@ -584,7 +586,7 @@ class AccountsManagerUsernameIntegrationTest {
 
       final Account reRegistered = AccountsHelper.createAccount(accountsManager, "+18005551111");
       assertEquals(deleted.getAccountIdentifier(), reRegistered.getAccountIdentifier(),
-          "within 30 days the same number gets its old ACI back (tellomi#1339)");
+          "inside the hold the same number gets its old ACI back (tellomi#1339)");
       assertTrue(reRegistered.getUsernameHash().isEmpty(), "the username itself is not restored, only reclaimable");
 
       final Account reclaimed = setUsername(reRegistered, USERNAME_HASH_1);
@@ -677,7 +679,7 @@ class AccountsManagerUsernameIntegrationTest {
           "a second new name right after the free set must get the cooldown");
       assertEquals(Duration.ofDays(180), e.getRetryAfter());
 
-      // The pre-deletion name is still held for this account (30 days from the deletion), so like any of its own held
+      // The pre-deletion name is still held for this account (USERNAME_HOLD_DURATION from the deletion), so like any of its own held
       // names it can be taken back inside the cooldown (ADR-0066 §6.2).
       final Account back = assertDoesNotThrow(() -> setUsername(renamed, USERNAME_HASH_2));
       assertArrayEquals(USERNAME_HASH_2, back.getUsernameHash().orElseThrow());
@@ -707,10 +709,10 @@ class AccountsManagerUsernameIntegrationTest {
     assertArrayEquals(USERNAME_HASH_2, restored.getUsernameHash().orElseThrow());
   }
 
-  // ── Tellomi (owner 2026-09-27): the rename cooldown is 180 days; the old-name hold stays 30 ──
+  // ── Tellomi (owner 2026-09-27): the rename cooldown is 180 days; the old-name hold is shorter (7 days since owner D9, 2026-10-17) ──
 
   @Test
-  void theRenameCooldownIs180DaysWhileTheOldNameIsHeldFor30() throws Exception {
+  void theRenameCooldownIs180DaysWhileTheOldNameIsHeldFor7() throws Exception {
     clock.pin(Instant.ofEpochSecond(clock.instant().getEpochSecond()));
     final Instant renamedAt = clock.instant();
     try {
@@ -725,8 +727,8 @@ class AccountsManagerUsernameIntegrationTest {
           "a new name 179 days after a rename must still be refused");
       assertEquals(Duration.ofDays(1), e.getRetryAfter());
 
-      // The hold on the old name ended on day 30: from then on taking it back is a change like any other.
-      clock.pin(renamedAt.plus(Duration.ofDays(31)));
+      // The hold on the old name ended on day 7: from then on taking it back is a change like any other.
+      clock.pin(renamedAt.plus(Accounts.USERNAME_HOLD_DURATION).plus(Duration.ofDays(1)));
       assertThrows(UsernameChangeCooldownException.class,
           () -> accountsManager.reserveUsernameHash(aci, List.of(USERNAME_HASH_1)));
 

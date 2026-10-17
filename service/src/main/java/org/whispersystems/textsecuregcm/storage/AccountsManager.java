@@ -158,7 +158,7 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
   /// Tellomi (ADR-0066, TR-ID-01): how long after changing its username an account must wait before changing it again,
   /// unless `usernamePolicy.renameCooldown` says otherwise. 180 days since owner 2026-09-27 (was 30). Without a cooldown
   /// one account could hold its current name plus three held ones just by renaming in a row. It is independent of
-  /// Accounts#USERNAME_HOLD_DURATION (30 days): taking back one's own old name is possible only while that hold lasts.
+  /// Accounts#USERNAME_HOLD_DURATION (7 days): taking back one's own old name is possible only while that hold lasts.
   public static final Duration DEFAULT_USERNAME_CHANGE_COOLDOWN = Duration.ofDays(180);
   private final Duration usernameChangeCooldown;
   private final Duration maxTotpValidationDelay;
@@ -565,12 +565,12 @@ public class AccountsManager extends RedisPubSubAdapter<String, String> implemen
     // re-registering.
     account.setAccountIdentifier(maybeRecentlyDeletedAccountIdentifier.orElseGet(UUID::randomUUID));
 
-    // Tellomi (tellomi/tellomi#1397, owner 2026-09-27): the same number back within the 30 days also gets back the
+    // Tellomi (tellomi/tellomi#1397, owner 2026-09-27): the same number back within the 7 days also gets back the
     // username holds the deleted account left — its username at deletion and names it had given up. The account holds
     // no username and has no reservation, so nothing is handed back to the client; the user has to type the old name.
     // The rename cooldown is not carried over, so the first username set is free (the old name or a new one), and
     // because the account holds names, that set counts as a change and starts a full cooldown. The holds expire with
-    // the 30-day window, and so does the head start.
+    // the 7-day window, and so does the head start.
     if (maybeRecentlyDeletedAccountIdentifier.isPresent() && maybePni.isPresent()) {
       final List<Account.UsernameHold> holdsLeftBehind =
           accounts.findRecentlyDeletedAccountUsernameHolds(maybePni.get());
