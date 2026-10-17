@@ -29,6 +29,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import javax.annotation.Nonnull;
+import javax.annotation.Nullable;
 import org.signal.libsignal.protocol.ServiceId;
 import org.signal.libsignal.zkgroup.GenericServerSecretParams;
 import org.signal.libsignal.zkgroup.auth.AuthCredentialWithPniResponse;
@@ -41,6 +42,8 @@ import org.whispersystems.textsecuregcm.entities.DeliveryCertificate;
 import org.whispersystems.textsecuregcm.entities.GroupCredentials;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
+import org.whispersystems.textsecuregcm.spam.TellomiRestrictionSpamChecker;
+import org.whispersystems.textsecuregcm.storage.TellomiAccountRestrictions;
 
 @Path("/v1/certificate")
 @Tag(name = "Certificate")
@@ -58,6 +61,10 @@ public class CertificateController {
   private static final String GENERATE_DELIVERY_CERTIFICATE_COUNTER_NAME = name(CertificateController.class, "generateCertificate");
   private static final String INCLUDE_E164_TAG_NAME = "includeE164";
 
+  // Tellomi（ADR-0078 §3.3）：人工处置名单；没配 tellomiRestrictions 时为 null
+  @Nullable
+  private TellomiAccountRestrictions tellomiRestrictions;
+
   public CertificateController(
       final AccountsManager accountsManager,
       @Nonnull CertificateGenerator certificateGenerator,
@@ -74,6 +81,12 @@ public class CertificateController {
     this.clock = Objects.requireNonNull(clock);
   }
 
+  /// Tellomi（ADR-0078 §3.3）：「限制全部发送」/「暂停」的账号不再拿得到发送者证书。
+  public CertificateController withTellomiRestrictions(@Nullable final TellomiAccountRestrictions tellomiRestrictions) {
+    this.tellomiRestrictions = tellomiRestrictions;
+    return this;
+  }
+
   @GET
   @Produces(MediaType.APPLICATION_JSON)
   @Path("/delivery")
@@ -85,6 +98,15 @@ public class CertificateController {
 
     final Account account = accountsManager.getByAccountIdentifier(auth.accountIdentifier())
         .orElseThrow(() -> new WebApplicationException(Response.Status.UNAUTHORIZED));
+
+    // Tellomi（ADR-0078 §3.3）：手上的证书过期后，密封发送也发不出去
+    if (tellomiRestrictions != null) {
+      tellomiRestrictions.get(auth.accountIdentifier())
+          .filter(restriction -> restriction.level().blocksSenderCertificates())
+          .ifPresent(restriction -> {
+            throw new WebApplicationException(TellomiRestrictionSpamChecker.forbidden(restriction));
+          });
+    }
 
     try {
       return new DeliveryCertificate(certificateGenerator.createFor(account, auth.deviceId(), includeE164));

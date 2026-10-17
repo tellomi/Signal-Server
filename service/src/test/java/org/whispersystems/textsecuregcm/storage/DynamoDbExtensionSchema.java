@@ -357,6 +357,20 @@ public final class DynamoDbExtensionSchema {
                 .build()),
         List.of(), List.of()),
 
+    // Tellomi（ADR-0078 §3.3）：人工处置名单
+    TELLOMI_ACCOUNT_RESTRICTIONS("tellomi_account_restrictions_test",
+        TellomiAccountRestrictions.KEY_ACCOUNT,
+        TellomiAccountRestrictions.KEY_SORT,
+        List.of(AttributeDefinition.builder()
+                .attributeName(TellomiAccountRestrictions.KEY_ACCOUNT)
+                .attributeType(ScalarAttributeType.B)
+                .build(),
+            AttributeDefinition.builder()
+                .attributeName(TellomiAccountRestrictions.KEY_SORT)
+                .attributeType(ScalarAttributeType.S)
+                .build()),
+        List.of(), List.of()),
+
     SCHEDULED_JOBS("scheduled_jobs_test",
         JobScheduler.KEY_SCHEDULER_NAME,
         JobScheduler.ATTR_RUN_AT,

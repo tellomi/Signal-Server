@@ -72,6 +72,7 @@ import org.whispersystems.textsecuregcm.configuration.TurnConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TellomiEngineDeletionConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TellomiFeedConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TellomiReportsConfiguration;
+import org.whispersystems.textsecuregcm.configuration.TellomiRestrictionsConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TurnstileCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.UsernamePolicyConfiguration;
 import org.whispersystems.textsecuregcm.configuration.UnidentifiedDeliveryConfiguration;
@@ -349,6 +350,11 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @JsonProperty
   private TellomiReportsConfiguration tellomiReports;
+
+  // Tellomi（ADR-0078 §3.3）：optional; absent = no manual restrictions (upstream behaviour)
+  @Valid
+  @JsonProperty
+  private TellomiRestrictionsConfiguration tellomiRestrictions;
 
   @Valid
   @NotNull
@@ -657,6 +663,10 @@ public class WhisperServerConfiguration extends Configuration {
 
   public TellomiReportsConfiguration getTellomiReportsConfiguration() {
     return tellomiReports;
+  }
+
+  public TellomiRestrictionsConfiguration getTellomiRestrictionsConfiguration() {
+    return tellomiRestrictions;
   }
 
   public RegistrationRiskConfiguration getRegistrationRiskConfiguration() {

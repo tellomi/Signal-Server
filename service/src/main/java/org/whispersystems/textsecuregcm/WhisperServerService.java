@@ -123,6 +123,7 @@ import org.whispersystems.textsecuregcm.configuration.AltchaCaptchaConfiguration
 import org.whispersystems.textsecuregcm.configuration.TellomiEngineDeletionConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TellomiFeedConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TellomiReportsConfiguration;
+import org.whispersystems.textsecuregcm.configuration.TellomiRestrictionsConfiguration;
 import org.whispersystems.textsecuregcm.configuration.RegistrationRiskConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TurnstileCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.BadgeConfiguration;
@@ -273,6 +274,7 @@ import org.whispersystems.textsecuregcm.spam.ChallengeConstraintChecker;
 import org.whispersystems.textsecuregcm.spam.RegistrationFraudChecker;
 import org.whispersystems.textsecuregcm.spam.RegistrationRecoveryChecker;
 import org.whispersystems.textsecuregcm.spam.SpamChecker;
+import org.whispersystems.textsecuregcm.spam.TellomiRestrictionSpamChecker;
 import org.whispersystems.textsecuregcm.spam.SpamFilter;
 import org.whispersystems.textsecuregcm.storage.AccountLockManager;
 import org.whispersystems.textsecuregcm.storage.Accounts;
@@ -309,6 +311,7 @@ import org.whispersystems.textsecuregcm.storage.RepeatedUseECSignedPreKeyStore;
 import org.whispersystems.textsecuregcm.storage.RepeatedUseKEMSignedPreKeyStore;
 import org.whispersystems.textsecuregcm.storage.ReportMessageDynamoDb;
 import org.whispersystems.textsecuregcm.storage.ReportMessageManager;
+import org.whispersystems.textsecuregcm.storage.TellomiAccountRestrictions;
 import org.whispersystems.textsecuregcm.storage.TellomiReports;
 import org.whispersystems.textsecuregcm.storage.SingleUseECPreKeyStore;
 import org.whispersystems.textsecuregcm.storage.SubscriptionManager;
@@ -1075,12 +1078,28 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     if (spamFilter.isEmpty()) {
       log.warn("No spam filters installed");
     }
-    final SpamChecker spamChecker = spamFilter
+    final SpamChecker upstreamSpamChecker = spamFilter
         .map(SpamFilter::getSpamChecker)
         .orElseGet(() -> {
           log.warn("No spam-checkers found; using default (no-op) provider as a default");
           return SpamChecker.noop();
         });
+    // Tellomi（ADR-0078 §3.3，tellomi/tellomi#1368）：配了 tellomiRestrictions 才有人工处置名单
+    final TellomiRestrictionsConfiguration tellomiRestrictionsConfig = config.getTellomiRestrictionsConfiguration();
+    final TellomiAccountRestrictions tellomiAccountRestrictions;
+    final SpamChecker spamChecker;
+    if (tellomiRestrictionsConfig != null) {
+      tellomiAccountRestrictions = new TellomiAccountRestrictions(dynamoDbClient, tellomiRestrictionsConfig.tableName(),
+          Clock.systemUTC());
+      tellomiAccountRestrictions.start(
+          ScheduledExecutorServiceBuilder.of(environment, "tellomiRestrictions").threads(1).build(),
+          tellomiRestrictionsConfig.refreshIntervalOrDefault());
+      spamChecker = new TellomiRestrictionSpamChecker(tellomiAccountRestrictions, upstreamSpamChecker);
+      log.info("Tellomi: manual account restrictions enabled (refresh {})", tellomiRestrictionsConfig.refreshIntervalOrDefault());
+    } else {
+      tellomiAccountRestrictions = null;
+      spamChecker = upstreamSpamChecker;
+    }
     final ChallengeConstraintChecker challengeConstraintChecker = spamFilter
         .map(SpamFilter::getChallengeConstraintChecker)
         .orElseGet(() -> {
@@ -1379,7 +1398,8 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         new CallRoutingControllerV2(rateLimiters, cloudflareTurnCredentialsManager),
         new CallLinkController(rateLimiters, callingGenericZkSecretParams, callingPreV101GenericZkSecretParams),
         new CallQualitySurveyController(callQualitySurveyManager),
-        new CertificateController(accountsManager, certificateGenerator, zkAuthOperations, callingGenericZkSecretParams, callingPreV101GenericZkSecretParams, clock),
+        new CertificateController(accountsManager, certificateGenerator, zkAuthOperations, callingGenericZkSecretParams, callingPreV101GenericZkSecretParams, clock)
+            .withTellomiRestrictions(tellomiAccountRestrictions),
         new ChallengeController(accountsManager, rateLimitChallengeManager, challengeConstraintChecker),
         new DeviceController(accountsManager, rateLimiters, persistentTimer),
         new DeviceCheckController(clock, accountsManager, backupAuthManager, appleDeviceCheckManager, rateLimiters,
