@@ -734,7 +734,10 @@ public class MessageController {
       @PathParam("source") UUID source,
       @PathParam("messageGuid") UUID messageGuid,
       @Nullable SpamReport spamReport,
-      @HeaderParam(HttpHeaders.USER_AGENT) String userAgent) {
+      @HeaderParam(HttpHeaders.USER_AGENT) String userAgent) throws RateLimitExceededException {
+
+    // Tellomi（tellomi/tellomi#1368）：按举报人限流，超了回 429（RateLimiters.For.TELLOMI_REPORT_SPAM）。
+    rateLimiters.getTellomiReportSpamLimiter().validate(auth.accountIdentifier());
 
     // spam report token is optional, but if provided ensure it is non-empty.
     final Optional<byte[]> maybeSpamReportToken =

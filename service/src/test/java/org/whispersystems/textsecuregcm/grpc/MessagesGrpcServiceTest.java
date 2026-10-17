@@ -118,6 +118,9 @@ class MessagesGrpcServiceTest extends SimpleBaseGrpcTest<MessagesGrpcService, Me
   private RateLimiter rateLimiter;
 
   @Mock
+  private RateLimiter reportSpamLimiter;
+
+  @Mock
   private Account authenticatedAccount;
 
   @Mock
@@ -168,6 +171,7 @@ class MessagesGrpcServiceTest extends SimpleBaseGrpcTest<MessagesGrpcService, Me
 
     when(rateLimiters.getInboundMessageBytes()).thenReturn(rateLimiter);
     when(rateLimiters.getMessagesLimiter()).thenReturn(rateLimiter);
+    when(rateLimiters.getTellomiReportSpamLimiter()).thenReturn(reportSpamLimiter);
 
     when(spamChecker.checkForIndividualRecipientSpamGrpc(any(), any(), any(), any()))
         .thenReturn(new SpamCheckResult<>(Optional.empty(), Optional.empty()));
@@ -848,6 +852,20 @@ class MessagesGrpcServiceTest extends SimpleBaseGrpcTest<MessagesGrpcService, Me
           argThat(maybeToken -> maybeToken.map(token -> Arrays.equals(token, reportSpamToken)).orElse(false)),
           any(),
           eq(true));
+    }
+
+    // Tellomi（tellomi/tellomi#1368）：举报按举报人限流，超了是 RESOURCE_EXHAUSTED + retry-after，举报不往下走
+    @Test
+    void reportMessageRateLimited() throws Exception {
+      final Duration retryDuration = Duration.ofMinutes(48);
+      doThrow(new RateLimitExceededException(retryDuration)).when(reportSpamLimiter).validate(AUTHENTICATED_ACI);
+
+      assertRateLimitExceeded(retryDuration, () -> authenticatedServiceStub().reportMessage(ReportMessageRequest.newBuilder()
+          .setSourceServiceIdentifier(GrpcServiceIdentifierUtil.toGrpcServiceIdentifier(new AciServiceIdentifier(UUID.randomUUID())))
+          .setMessageGuid(UUIDUtil.toByteString(UUID.randomUUID()))
+          .build()));
+
+      verify(reportMessageManager, never()).report(any(), any(), any(), any(), any(), any(), any(), anyBoolean());
     }
 
     @Test

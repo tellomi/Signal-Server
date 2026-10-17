@@ -77,7 +77,11 @@ public class RateLimiters extends BaseRateLimiters<RateLimiters.For> {
     // 光靠按账号的限流不够（一个 IP 后面可以有很多账号），所以这时两个接口再按 IP 限一层。表载入后不用这两个。
     // 比按账号的宽一倍（运营商级 NAT 后面会有很多正常用户）；失败策略和按账号的一致。动态配置同样能调。
     TELLOMI_FEED_FRIEND_ASSERTION_IP("tellomiFeedFriendAssertionIp", new RateLimiterConfig(1200, Duration.ofSeconds(3), false)),
-    TELLOMI_FEED_AUDIENCE_LIST_IP("tellomiFeedAudienceListIp", new RateLimiterConfig(120, Duration.ofSeconds(10), true))
+    TELLOMI_FEED_AUDIENCE_LIST_IP("tellomiFeedAudienceListIp", new RateLimiterConfig(120, Duration.ofSeconds(10), true)),
+    // Tellomi（tellomi/tellomi#1368，ADR-0078 §3.1 第 3 条）：举报垃圾消息（HTTP POST /v1/messages/report、gRPC reportMessage），
+    // 按举报人账号计。上游这个接口没有任何限流。客户端一次举报最多报 3 条消息（= 3 次调用），桶 30 ≈ 连着举报 10 次，
+    // 之后每 48 分钟回一个（一天约 30 次）。只防刷，不探测任何东西，Redis 不可用时放行。动态配置 limits.tellomiReportSpam 可调。
+    TELLOMI_REPORT_SPAM("tellomiReportSpam", new RateLimiterConfig(30, Duration.ofMinutes(48), true))
     ;
 
     private final String id;
@@ -282,5 +286,9 @@ public class RateLimiters extends BaseRateLimiters<RateLimiters.For> {
 
   public RateLimiter getTellomiFeedAudienceListIpLimiter() {
     return forDescriptor(For.TELLOMI_FEED_AUDIENCE_LIST_IP);
+  }
+
+  public RateLimiter getTellomiReportSpamLimiter() {
+    return forDescriptor(For.TELLOMI_REPORT_SPAM);
   }
 }

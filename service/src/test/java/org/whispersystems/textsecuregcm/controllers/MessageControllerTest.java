@@ -13,6 +13,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyByte;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -154,6 +155,7 @@ class MessageControllerTest {
   private static final RateLimiters rateLimiters = mock(RateLimiters.class);
   private static final CardinalityEstimator cardinalityEstimator = mock(CardinalityEstimator.class);
   private static final RateLimiter rateLimiter = mock(RateLimiter.class);
+  private static final RateLimiter reportSpamLimiter = mock(RateLimiter.class);
   private static final PhoneNumberIdentifiers phoneNumberIdentifiers = mock(PhoneNumberIdentifiers.class);
   private static final PushNotificationManager pushNotificationManager = mock(PushNotificationManager.class);
   private static final PushNotificationScheduler pushNotificationScheduler = mock(PushNotificationScheduler.class);
@@ -227,6 +229,7 @@ class MessageControllerTest {
     when(rateLimiters.getMessagesLimiter()).thenReturn(rateLimiter);
     when(rateLimiters.getStoriesLimiter()).thenReturn(rateLimiter);
     when(rateLimiters.getInboundMessageBytes()).thenReturn(rateLimiter);
+    when(rateLimiters.getTellomiReportSpamLimiter()).thenReturn(reportSpamLimiter);
 
     when(rateLimiter.validateAsync(any(UUID.class))).thenReturn(CompletableFuture.completedFuture(null));
 
@@ -253,6 +256,7 @@ class MessageControllerTest {
         messagesManager,
         rateLimiters,
         rateLimiter,
+        reportSpamLimiter,
         cardinalityEstimator,
         phoneNumberIdentifiers,
         pushNotificationManager,
@@ -709,6 +713,26 @@ class MessageControllerTest {
       assertThat("Good Response Body",
           asJson(response.readEntity(StaleDevicesResponse.class)),
           is(equalTo(jsonFixture("fixtures/mismatched_registration_id.json"))));
+    }
+  }
+
+  // Tellomi（tellomi/tellomi#1368）：举报按举报人限流，超了回 429，举报不往下走
+  @Test
+  void testReportMessageRateLimited() throws Exception {
+    final UUID senderAci = UUID.randomUUID();
+    final Duration retryAfter = Duration.ofMinutes(48);
+    doThrow(new RateLimitExceededException(retryAfter)).when(reportSpamLimiter).validate(AuthHelper.VALID_UUID);
+
+    try (final Response response =
+        resources.getJerseyTest()
+            .target(String.format("/v1/messages/report/%s/%s", senderAci, UUID.randomUUID()))
+            .request()
+            .header("Authorization", AuthHelper.getAuthHeader(AuthHelper.VALID_UUID, AuthHelper.VALID_PASSWORD))
+            .post(null)) {
+
+      assertThat(response.getStatus(), is(equalTo(429)));
+      assertThat(response.getHeaderString("Retry-After"), is(equalTo(String.valueOf(retryAfter.toSeconds()))));
+      verify(reportMessageManager, never()).report(any(), any(), any(), any(), any(), any(), any(), anyBoolean());
     }
   }
 

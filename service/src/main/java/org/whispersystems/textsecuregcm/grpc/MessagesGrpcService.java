@@ -274,13 +274,17 @@ public class MessagesGrpcService extends SimpleMessagesGrpc.MessagesImplBase {
   }
 
   @Override
-  public ReportMessageResponse reportMessage(final ReportMessageRequest request) {
+  public ReportMessageResponse reportMessage(final ReportMessageRequest request) throws RateLimitExceededException {
     final ServiceIdentifier sourceServiceIdentifier =
         GrpcServiceIdentifierUtil.fromGrpcServiceIdentifier(request.getSourceServiceIdentifier());
+    final AuthenticatedDevice reporter = AuthenticationUtil.requireAuthenticatedDevice();
+
+    // Tellomi（tellomi/tellomi#1368）：和 HTTP 接口同一个按举报人的限流
+    rateLimiters.getTellomiReportSpamLimiter().validate(reporter.accountIdentifier());
 
     ReportMessageHelper.reportMessage(
         sourceServiceIdentifier,
-        new AciServiceIdentifier(AuthenticationUtil.requireAuthenticatedDevice().accountIdentifier()),
+        new AciServiceIdentifier(reporter.accountIdentifier()),
         UUIDUtil.fromByteString(request.getMessageGuid()),
         request.getReportSpamToken().isEmpty() ? null : request.getReportSpamToken().toByteArray(),
         RequestAttributesUtil.getUserAgent().orElse(null),
