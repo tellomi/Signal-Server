@@ -343,6 +343,20 @@ public final class DynamoDbExtensionSchema {
             .build()),
         List.of(), List.of()),
 
+    // Tellomi（ADR-0078 §3.1）：举报记录。香港的 deploy/hk/CreateTables.java 照这张清单建表
+    TELLOMI_REPORTS("tellomi_reports_test",
+        TellomiReports.KEY_REPORTED,
+        TellomiReports.KEY_SORT,
+        List.of(AttributeDefinition.builder()
+                .attributeName(TellomiReports.KEY_REPORTED)
+                .attributeType(ScalarAttributeType.B)
+                .build(),
+            AttributeDefinition.builder()
+                .attributeName(TellomiReports.KEY_SORT)
+                .attributeType(ScalarAttributeType.S)
+                .build()),
+        List.of(), List.of()),
+
     SCHEDULED_JOBS("scheduled_jobs_test",
         JobScheduler.KEY_SCHEDULER_NAME,
         JobScheduler.ATTR_RUN_AT,

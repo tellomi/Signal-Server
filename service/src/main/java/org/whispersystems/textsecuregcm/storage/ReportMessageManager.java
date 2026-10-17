@@ -34,6 +34,10 @@ public class ReportMessageManager {
 
   private final List<ReportedMessageListener> reportedMessageListeners = new ArrayList<>();
 
+  // Tellomi（ADR-0078 §3.1，tellomi/tellomi#1368）：举报记录；没配 tellomiReports 时为 null，和上游一样不留记录
+  @Nullable
+  private TellomiReports tellomiReports;
+
   private static final String REPORT_MESSAGE_COUNTER_NAME = MetricsUtil.name(ReportMessageManager.class, "reportMessage");
   private static final String FOUND_MESSAGE_TAG = "foundMessage";
   private static final String TOKEN_PRESENT_TAG = "hasReportSpamToken";
@@ -52,6 +56,11 @@ public class ReportMessageManager {
 
   public void addListener(final ReportedMessageListener listener) {
     this.reportedMessageListeners.add(listener);
+  }
+
+  /// Tellomi（ADR-0078 §3.1）：每次举报（核实或没核实）都记一条，见 [TellomiReports]。
+  public void setTellomiReports(@Nullable final TellomiReports tellomiReports) {
+    this.tellomiReports = tellomiReports;
   }
 
   public void store(String sourceAci, UUID messageGuid) {
@@ -73,6 +82,11 @@ public class ReportMessageManager {
       final boolean sourceAccountDeleted) {
 
     final boolean found = reportMessageDynamoDb.remove(hash(messageGuid, sourceAci.toString()));
+
+    // Tellomi（ADR-0078 §3.1）：核实（found）和没核实的都记，查看时分开数；写记录是异步的，失败不影响举报
+    if (tellomiReports != null) {
+      tellomiReports.record(sourceAci, reporterUuid, found, sourceAccountDeleted, reporterUserAgent);
+    }
 
     Metrics.counter(REPORT_MESSAGE_COUNTER_NAME,
             Tags.of(FOUND_MESSAGE_TAG, String.valueOf(found),

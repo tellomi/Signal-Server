@@ -122,6 +122,7 @@ import org.whispersystems.textsecuregcm.captcha.TurnstileCaptchaClient;
 import org.whispersystems.textsecuregcm.configuration.AltchaCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TellomiEngineDeletionConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TellomiFeedConfiguration;
+import org.whispersystems.textsecuregcm.configuration.TellomiReportsConfiguration;
 import org.whispersystems.textsecuregcm.configuration.RegistrationRiskConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TurnstileCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.BadgeConfiguration;
@@ -308,6 +309,7 @@ import org.whispersystems.textsecuregcm.storage.RepeatedUseECSignedPreKeyStore;
 import org.whispersystems.textsecuregcm.storage.RepeatedUseKEMSignedPreKeyStore;
 import org.whispersystems.textsecuregcm.storage.ReportMessageDynamoDb;
 import org.whispersystems.textsecuregcm.storage.ReportMessageManager;
+import org.whispersystems.textsecuregcm.storage.TellomiReports;
 import org.whispersystems.textsecuregcm.storage.SingleUseECPreKeyStore;
 import org.whispersystems.textsecuregcm.storage.SubscriptionManager;
 import org.whispersystems.textsecuregcm.storage.Subscriptions;
@@ -818,6 +820,13 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         Clock.systemUTC());
     ReportMessageManager reportMessageManager = new ReportMessageManager(reportMessageDynamoDb, rateLimitersCluster,
         config.getReportMessageConfiguration().getCounterTtl());
+    // Tellomi（ADR-0078 §3.1，tellomi/tellomi#1368）：配了 tellomiReports 才留举报记录
+    final TellomiReportsConfiguration tellomiReportsConfig = config.getTellomiReportsConfiguration();
+    if (tellomiReportsConfig != null) {
+      reportMessageManager.setTellomiReports(new TellomiReports(dynamoDbAsyncClient, tellomiReportsConfig.tableName(),
+          tellomiReportsConfig.retentionOrDefault(), Clock.systemUTC()));
+      log.info("Tellomi: recording spam reports (retention {})", tellomiReportsConfig.retentionOrDefault());
+    }
     RedisMessageAvailabilityManager redisMessageAvailabilityManager =
         new RedisMessageAvailabilityManager(messagesCluster, clientEventExecutor, asyncOperationQueueingExecutor);
     MessagesManager messagesManager =

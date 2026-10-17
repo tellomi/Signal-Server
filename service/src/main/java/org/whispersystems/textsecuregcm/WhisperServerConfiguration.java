@@ -71,6 +71,7 @@ import org.whispersystems.textsecuregcm.configuration.TotpConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TurnConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TellomiEngineDeletionConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TellomiFeedConfiguration;
+import org.whispersystems.textsecuregcm.configuration.TellomiReportsConfiguration;
 import org.whispersystems.textsecuregcm.configuration.TurnstileCaptchaConfiguration;
 import org.whispersystems.textsecuregcm.configuration.UsernamePolicyConfiguration;
 import org.whispersystems.textsecuregcm.configuration.UnidentifiedDeliveryConfiguration;
@@ -343,6 +344,11 @@ public class WhisperServerConfiguration extends Configuration {
   @Valid
   @JsonProperty
   private UsernamePolicyConfiguration usernamePolicy;
+
+  // Tellomi（ADR-0078 §3.1）：optional; absent = spam reports leave no record (upstream behaviour)
+  @Valid
+  @JsonProperty
+  private TellomiReportsConfiguration tellomiReports;
 
   @Valid
   @NotNull
@@ -647,6 +653,10 @@ public class WhisperServerConfiguration extends Configuration {
 
   public TellomiFeedConfiguration getTellomiFeedConfiguration() {
     return tellomiFeed;
+  }
+
+  public TellomiReportsConfiguration getTellomiReportsConfiguration() {
+    return tellomiReports;
   }
 
   public RegistrationRiskConfiguration getRegistrationRiskConfiguration() {
