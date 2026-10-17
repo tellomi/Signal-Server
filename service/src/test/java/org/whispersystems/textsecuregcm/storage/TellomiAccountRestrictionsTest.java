@@ -116,6 +116,73 @@ class TellomiAccountRestrictionsTest {
     assertTrue(restrictions.get(account).isPresent());
   }
 
+  private static final byte[] KEY = new byte[32];
+
+  private static Map<String, AttributeValue> numberItem(final UUID account, final byte[] hash, final Instant until) {
+    return Map.of(
+        TellomiAccountRestrictions.KEY_ACCOUNT, AttributeValues.fromUUID(account),
+        TellomiAccountRestrictions.KEY_SORT, AttributeValues.fromString(TellomiAccountRestrictions.NUMBER),
+        TellomiAccountRestrictions.ATTR_NUMBER_HASH, AttributeValues.fromByteArray(hash),
+        TellomiAccountRestrictions.ATTR_UNTIL, AttributeValues.fromLong(until.getEpochSecond()));
+  }
+
+  @Test
+  void suspendedNumbersAreMatchedByTheirKeyedHashUntilTheDeadline() {
+    final TellomiAccountRestrictions withKey =
+        new TellomiAccountRestrictions(dynamoDbClient, "tellomi_account_restrictions_test", KEY, clock);
+    final UUID account = UUID.randomUUID();
+    when(dynamoDbClient.scan(any(ScanRequest.class))).thenReturn(ScanResponse.builder().items(List.of(
+        item(account, "current", "suspended", NOW.plus(Duration.ofDays(30))),
+        numberItem(account, TellomiAccountRestrictions.numberHash(KEY, "+8613800000003"), NOW.plus(Duration.ofDays(30))),
+        numberItem(UUID.randomUUID(), TellomiAccountRestrictions.numberHash(KEY, "+8613800000004"), NOW.minusSeconds(1)),
+        numberItem(UUID.randomUUID(), new byte[7], NOW.plus(Duration.ofDays(30)))
+    )).build());
+
+    withKey.refresh();
+
+    assertTrue(withKey.isSuspended(account));
+    assertEquals(NOW.plus(Duration.ofDays(30)), withKey.numberBlockedUntil("+8613800000003").orElseThrow());
+    assertTrue(withKey.numberBlockedUntil("+8613800000004").isEmpty(), "expired");
+    assertTrue(withKey.numberBlockedUntil("+8613800000005").isEmpty(), "never blocked");
+
+    clock.pin(NOW.plus(Duration.ofDays(30)));
+    assertTrue(withKey.numberBlockedUntil("+8613800000003").isEmpty(), "lapses at the deadline");
+  }
+
+  @Test
+  void withoutAKeyNoNumberIsEverBlocked() {
+    when(dynamoDbClient.scan(any(ScanRequest.class))).thenReturn(ScanResponse.builder().items(List.of(
+        numberItem(UUID.randomUUID(), TellomiAccountRestrictions.numberHash(KEY, "+8613800000003"), NOW.plus(Duration.ofDays(30)))
+    )).build());
+    restrictions.refresh();
+    assertTrue(restrictions.numberBlockedUntil("+8613800000003").isEmpty());
+  }
+
+  @Test
+  void theNumberHashIsHmacSha256OfTheUtf8Number() {
+    // 和 deploy/hk/test/restrict_test.py 的同一个向量：hmac.new(bytes(32), b"+8613800000003", sha256)
+    assertEquals("092bd595cdb5fc287a5a15ee58d7cb43f08f12a070f846da3ffad9c2ed51eea2",
+        java.util.HexFormat.of().formatHex(TellomiAccountRestrictions.numberHash(KEY, "+8613800000003")));
+  }
+
+  @Test
+  void aNewSuspensionIsReportedOnce() {
+    final UUID account = UUID.randomUUID();
+    final List<UUID> suspended = new java.util.ArrayList<>();
+    restrictions.onSuspended(suspended::add);
+    when(dynamoDbClient.scan(any(ScanRequest.class)))
+        .thenReturn(ScanResponse.builder().items(List.of(item(account, "current", "stranger", NOW.plus(Duration.ofDays(7))))).build())
+        .thenReturn(ScanResponse.builder().items(List.of(item(account, "current", "suspended", NOW.plus(Duration.ofDays(7))))).build())
+        .thenReturn(ScanResponse.builder().items(List.of(item(account, "current", "suspended", NOW.plus(Duration.ofDays(7))))).build());
+
+    restrictions.refresh();
+    assertTrue(suspended.isEmpty());
+    restrictions.refresh();
+    assertEquals(List.of(account), suspended);
+    restrictions.refresh();
+    assertEquals(List.of(account), suspended, "still suspended: no second disconnect");
+  }
+
   @Test
   void onlyTheHarderLevelsBlockSenderCertificates() {
     assertFalse(Level.STRANGER.blocksSenderCertificates());

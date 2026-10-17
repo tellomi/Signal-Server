@@ -899,7 +899,25 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         accountsManager);
     reportMessageManager.addListener(reportedMessageMetricsListener);
 
-    final AccountAuthenticator accountAuthenticator = new AccountAuthenticator(accountsManager);
+    // Tellomi（ADR-0078 §3.3，tellomi/tellomi#1368）：配了 tellomiRestrictions 才有人工处置名单。
+    // 暂停的账号鉴权失败（AccountAuthenticator）、刚暂停时断开它所有设备、同号重新注册被拒（RegistrationController）
+    final TellomiRestrictionsConfiguration tellomiRestrictionsConfig = config.getTellomiRestrictionsConfiguration();
+    final TellomiAccountRestrictions tellomiAccountRestrictions;
+    if (tellomiRestrictionsConfig != null) {
+      tellomiAccountRestrictions = new TellomiAccountRestrictions(dynamoDbClient, tellomiRestrictionsConfig.tableName(),
+          tellomiRestrictionsConfig.numberHashKeyBytes(), Clock.systemUTC());
+      tellomiAccountRestrictions.onSuspended(accountIdentifier -> accountsManager.getByAccountIdentifier(accountIdentifier)
+          .ifPresent(disconnectionRequestManager::requestDisconnection));
+      tellomiAccountRestrictions.start(
+          ScheduledExecutorServiceBuilder.of(environment, "tellomiRestrictions").threads(1).build(),
+          tellomiRestrictionsConfig.refreshIntervalOrDefault());
+      log.info("Tellomi: manual account restrictions enabled (refresh {}, number blocks {})",
+          tellomiRestrictionsConfig.refreshIntervalOrDefault(), tellomiRestrictionsConfig.numberHashKey() != null);
+    } else {
+      tellomiAccountRestrictions = null;
+    }
+    final AccountAuthenticator accountAuthenticator = new AccountAuthenticator(accountsManager)
+        .withTellomiRestrictions(tellomiAccountRestrictions);
 
     final MessageSender messageSender = new MessageSender(messagesManager, pushNotificationManager, dynamicConfigurationManager);
     final ReceiptSender receiptSender = new ReceiptSender(accountsManager, messageSender, receiptSenderExecutor);
@@ -1084,22 +1102,9 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
           log.warn("No spam-checkers found; using default (no-op) provider as a default");
           return SpamChecker.noop();
         });
-    // Tellomi（ADR-0078 §3.3，tellomi/tellomi#1368）：配了 tellomiRestrictions 才有人工处置名单
-    final TellomiRestrictionsConfiguration tellomiRestrictionsConfig = config.getTellomiRestrictionsConfiguration();
-    final TellomiAccountRestrictions tellomiAccountRestrictions;
-    final SpamChecker spamChecker;
-    if (tellomiRestrictionsConfig != null) {
-      tellomiAccountRestrictions = new TellomiAccountRestrictions(dynamoDbClient, tellomiRestrictionsConfig.tableName(),
-          Clock.systemUTC());
-      tellomiAccountRestrictions.start(
-          ScheduledExecutorServiceBuilder.of(environment, "tellomiRestrictions").threads(1).build(),
-          tellomiRestrictionsConfig.refreshIntervalOrDefault());
-      spamChecker = new TellomiRestrictionSpamChecker(tellomiAccountRestrictions, upstreamSpamChecker);
-      log.info("Tellomi: manual account restrictions enabled (refresh {})", tellomiRestrictionsConfig.refreshIntervalOrDefault());
-    } else {
-      tellomiAccountRestrictions = null;
-      spamChecker = upstreamSpamChecker;
-    }
+    final SpamChecker spamChecker = tellomiAccountRestrictions != null
+        ? new TellomiRestrictionSpamChecker(tellomiAccountRestrictions, upstreamSpamChecker)
+        : upstreamSpamChecker;
     final ChallengeConstraintChecker challengeConstraintChecker = spamFilter
         .map(SpamFilter::getChallengeConstraintChecker)
         .orElseGet(() -> {
@@ -1417,7 +1422,8 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
             groupZkSecretParams, zkProfileOperations, batchIdentityCheckExecutor),
         new ProvisioningController(rateLimiters, provisioningManager),
         new RegistrationController(accountsManager, phoneVerificationTokenManager, registrationLockVerificationManager,
-            rateLimiters, registrationFraudChecker, ReceiptCredentialPresentation::new, zkReceiptOperations, clock, dynamicConfigurationManager),
+            rateLimiters, registrationFraudChecker, ReceiptCredentialPresentation::new, zkReceiptOperations, clock, dynamicConfigurationManager)
+            .withTellomiRestrictions(tellomiAccountRestrictions),
         new RemoteConfigController(remoteConfigsManager),
         // Tellomi（Google Play 删号）：网页自助删号 POST /v1/tellomi/account-deletion（短信验证过的会话 + 注册锁把关）
         new TellomiAccountDeletionController(accountsManager, phoneVerificationTokenManager, rateLimiters),

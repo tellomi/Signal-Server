@@ -18,10 +18,12 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.Optional;
 import java.util.UUID;
+import javax.annotation.Nullable;
 import org.apache.commons.lang3.StringUtils;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
 import org.whispersystems.textsecuregcm.storage.Device;
+import org.whispersystems.textsecuregcm.storage.TellomiAccountRestrictions;
 import org.whispersystems.textsecuregcm.util.Pair;
 import org.whispersystems.textsecuregcm.util.Util;
 
@@ -40,6 +42,10 @@ public class AccountAuthenticator implements Authenticator<BasicCredentials, Aut
   private final AccountsManager accountsManager;
   private final Clock clock;
 
+  // Tellomi（ADR-0078 §3.3）：人工处置名单；没配 tellomiRestrictions 时为 null
+  @Nullable
+  private TellomiAccountRestrictions tellomiRestrictions;
+
   public AccountAuthenticator(AccountsManager accountsManager) {
     this(accountsManager, Clock.systemUTC());
   }
@@ -48,6 +54,12 @@ public class AccountAuthenticator implements Authenticator<BasicCredentials, Aut
   public AccountAuthenticator(AccountsManager accountsManager, Clock clock) {
     this.accountsManager = accountsManager;
     this.clock = clock;
+  }
+
+  /// Tellomi（ADR-0078 §3.3）：「暂停」的账号鉴权失败——所有设备掉线、登不上。不动设备的鉴权令牌，所以解除后原设备照常登录。
+  public AccountAuthenticator withTellomiRestrictions(@Nullable final TellomiAccountRestrictions tellomiRestrictions) {
+    this.tellomiRestrictions = tellomiRestrictions;
+    return this;
   }
 
   static Pair<String, Byte> getIdentifierAndDeviceId(final String basicUsername) {
@@ -98,6 +110,11 @@ public class AccountAuthenticator implements Authenticator<BasicCredentials, Aut
 
       SaltedTokenHash deviceSaltedTokenHash = device.get().getAuthTokenHash();
       if (deviceSaltedTokenHash.verify(basicCredentials.getPassword())) {
+        // Tellomi：密码对了才看处置，不让没有凭证的人探出谁被暂停了
+        if (tellomiRestrictions != null && tellomiRestrictions.isSuspended(accountUuid)) {
+          failureReason = "tellomiSuspended";
+          return Optional.empty();
+        }
         succeeded = true;
         final Account authenticatedAccount = updateLastSeen(account.get(), device.get());
         return Optional.of(new AuthenticatedDevice(authenticatedAccount.getAccountIdentifier(),

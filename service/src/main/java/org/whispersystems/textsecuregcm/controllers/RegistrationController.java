@@ -70,6 +70,7 @@ import org.whispersystems.textsecuregcm.limits.RateLimiters;
 import org.whispersystems.textsecuregcm.mappers.MfaFailureExceptionMapper;
 import org.whispersystems.textsecuregcm.metrics.UserAgentTagUtil;
 import org.whispersystems.textsecuregcm.spam.RegistrationFraudChecker;
+import org.whispersystems.textsecuregcm.spam.TellomiRestrictionSpamChecker;
 import org.whispersystems.textsecuregcm.storage.Account;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
 import org.whispersystems.textsecuregcm.storage.AnnotatedTotpKey;
@@ -80,6 +81,7 @@ import org.whispersystems.textsecuregcm.storage.DeviceSpec;
 import org.whispersystems.textsecuregcm.storage.DynamicConfigurationManager;
 import org.whispersystems.textsecuregcm.storage.PhoneNumberRecoveryPasswordsManager;
 import org.whispersystems.textsecuregcm.storage.ReceiptAlreadyRedeemedException;
+import org.whispersystems.textsecuregcm.storage.TellomiAccountRestrictions;
 import org.whispersystems.textsecuregcm.subscriptions.ReceiptCredentialPresentationFactory;
 import org.whispersystems.textsecuregcm.subscriptions.ReceiptLevel;
 import org.whispersystems.textsecuregcm.util.HeaderUtils;
@@ -111,6 +113,10 @@ public class RegistrationController {
 
   private static final Logger logger = LoggerFactory.getLogger(RegistrationController.class);
 
+  // Tellomi（ADR-0078 §3.3）：人工处置名单；没配 tellomiRestrictions 时为 null
+  @Nullable
+  private TellomiAccountRestrictions tellomiRestrictions;
+
   public RegistrationController(final AccountsManager accounts,
                                 final PhoneVerificationTokenManager phoneVerificationTokenManager,
                                 final RegistrationLockVerificationManager registrationLockVerificationManager,
@@ -130,6 +136,20 @@ public class RegistrationController {
     this.serverZkReceiptOperations = serverZkReceiptOperations;
     this.clock = clock;
     this.dynamicConfigurationManager = dynamicConfigurationManager;
+  }
+
+  /// Tellomi（ADR-0078 §3.3 / 第六节第 6 问）：被暂停的号码不能重新注册，被暂停的账号不能按 ACI 找回。
+  public RegistrationController withTellomiRestrictions(@Nullable final TellomiAccountRestrictions tellomiRestrictions) {
+    this.tellomiRestrictions = tellomiRestrictions;
+    return this;
+  }
+
+  /// 403 + `tellomiRestriction`（和发送被拒同一个形状）。只在证明了号码 / 账号是自己的之后调，不让别人探出谁被暂停了。
+  private void rejectIfSuspended(final Optional<Instant> until) {
+    until.ifPresent(u -> {
+      throw new WebApplicationException(TellomiRestrictionSpamChecker.forbidden(
+          new TellomiAccountRestrictions.Restriction(TellomiAccountRestrictions.Level.SUSPENDED, u)));
+    });
   }
 
   @POST
@@ -252,6 +272,13 @@ public class RegistrationController {
       throw new ServiceUnavailableException(e.getMessage());
     } catch (final RecoveryPasswordVerificationFailedException e) {
       throw new ForbiddenException("recovery password could not be verified");
+    }
+
+    if (tellomiRestrictions != null) {
+      rejectIfSuspended(Util.getAlternateForms(number).stream()
+          .map(tellomiRestrictions::numberBlockedUntil)
+          .flatMap(Optional::stream)
+          .max(Instant::compareTo));
     }
 
     rateLimiters.getRegistrationLimiter().validate(number);
@@ -433,6 +460,12 @@ public class RegistrationController {
     }
 
     existingAccount = checkMfa(existingAccount, registrationRequest.webAuthnResponse(), registrationRequest.totp());
+
+    if (tellomiRestrictions != null) {
+      rejectIfSuspended(tellomiRestrictions.get(accountIdentifier)
+          .filter(restriction -> restriction.level() == TellomiAccountRestrictions.Level.SUSPENDED)
+          .map(TellomiAccountRestrictions.Restriction::until));
+    }
 
     if (!registrationRequest.skipDeviceTransfer() && existingAccount.hasCapability(DeviceCapability.TRANSFER)) {
       // If a device transfer is possible, clients must explicitly opt out of a transfer (i.e. after prompting the user)

@@ -38,6 +38,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
@@ -116,6 +117,7 @@ import org.whispersystems.textsecuregcm.storage.DeviceSpec;
 import org.whispersystems.textsecuregcm.storage.DynamicConfigurationManager;
 import org.whispersystems.textsecuregcm.storage.ReceiptAlreadyRedeemedException;
 import org.whispersystems.textsecuregcm.storage.ReceiptCredentialTestUtil;
+import org.whispersystems.textsecuregcm.storage.TellomiAccountRestrictions;
 import org.whispersystems.textsecuregcm.storage.TotpKey;
 import org.whispersystems.textsecuregcm.subscriptions.ReceiptLevel;
 import org.whispersystems.textsecuregcm.tests.util.AuthHelper;
@@ -154,6 +156,9 @@ class RegistrationControllerTest {
       mock(DynamicConfigurationManager.class);
   private static final DynamicConfiguration DYNAMIC_CONFIGURATION = mock(DynamicConfiguration.class);
 
+  // Tellomi（ADR-0078 §3.3）：默认什么都没拦（mock 的 Optional 返回空），上游的用例照常走
+  private final TellomiAccountRestrictions tellomiRestrictions = mock(TellomiAccountRestrictions.class);
+
   private final ResourceExtension resources = ResourceExtension.builder()
       .addProperty(ServerProperties.UNWRAP_COMPLETION_STAGE_IN_WRITER_ENABLE, Boolean.TRUE)
       .addProvider(new RateLimitExceededExceptionMapper())
@@ -164,7 +169,8 @@ class RegistrationControllerTest {
       .setTestContainerFactory(new GrizzlyWebTestContainerFactory())
       .addResource(new RegistrationController(accountsManager, phoneVerificationTokenManager,
           registrationLockVerificationManager, rateLimiters, registrationFraudChecker, ReceiptCredentialPresentation::new,
-          new ServerZkReceiptOperations(ReceiptCredentialTestUtil.RECEIPT_PARAMS), CLOCK, DYNAMIC_CONFIGURATION_MANAGER))
+          new ServerZkReceiptOperations(ReceiptCredentialTestUtil.RECEIPT_PARAMS), CLOCK, DYNAMIC_CONFIGURATION_MANAGER)
+          .withTellomiRestrictions(tellomiRestrictions))
       .build();
 
   @BeforeEach
@@ -477,6 +483,48 @@ class RegistrationControllerTest {
           .handleVerificationCompleted(Base64.getEncoder().encodeToString("sessionId".getBytes(StandardCharsets.UTF_8)),
               account);
     }
+  }
+
+  // Tellomi（ADR-0078 §3.3 / 第六节第 6 问）：被暂停的号码，验证码 / 恢复密码都对了也不能重新注册
+  @ParameterizedTest
+  @ValueSource(booleans = {true, false})
+  void tellomiSuspendedNumberCannotRegisterAgain(final boolean useSessionVerification) {
+    final Instant until = CLOCK.instant().plus(Duration.ofDays(30)).truncatedTo(ChronoUnit.SECONDS);
+    when(tellomiRestrictions.numberBlockedUntil(NUMBER)).thenReturn(Optional.of(until));
+
+    final String requestJson = useSessionVerification
+        ? requestJson("sessionId")
+        : requestJsonRecoveryPassword("recovery-password".getBytes(StandardCharsets.UTF_8));
+
+    try (Response response = resources.getJerseyTest()
+        .target("/v1/registration")
+        .request()
+        .header(HttpHeaders.AUTHORIZATION, AuthHelper.getProvisioningAuthHeader(NUMBER, PASSWORD))
+        .post(Entity.json(requestJson))) {
+      assertEquals(403, response.getStatus());
+      final Map<?, ?> restriction = (Map<?, ?>) response.readEntity(Map.class).get("tellomiRestriction");
+      assertEquals("suspended", restriction.get("level"));
+      assertEquals(until.getEpochSecond(), ((Number) restriction.get("until")).longValue());
+    }
+
+    verify(accountsManager, never()).create(any(), any(), any(), any(), any(), any());
+  }
+
+  // Tellomi：没验证过号码的请求不会碰到处置名单（不让别人探出谁被暂停了）
+  @Test
+  void tellomiUnverifiedRequestsNeverLookAtTheRestrictions() throws Exception {
+    when(phoneVerificationTokenManager.verify(any(), any(), any(), any(), any(), any()))
+        .thenThrow(new UnverifiedRegistrationSessionException());
+
+    try (Response response = resources.getJerseyTest()
+        .target("/v1/registration")
+        .request()
+        .header(HttpHeaders.AUTHORIZATION, AuthHelper.getProvisioningAuthHeader(NUMBER, PASSWORD))
+        .post(Entity.json(requestJson("sessionId")))) {
+      assertEquals(401, response.getStatus());
+    }
+
+    verifyNoInteractions(tellomiRestrictions);
   }
 
   @ParameterizedTest
