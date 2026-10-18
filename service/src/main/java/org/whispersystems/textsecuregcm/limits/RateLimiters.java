@@ -82,6 +82,11 @@ public class RateLimiters extends BaseRateLimiters<RateLimiters.For> {
     // 按举报人账号计。上游这个接口没有任何限流。客户端一次举报最多报 3 条消息（= 3 次调用），桶 30 ≈ 连着举报 10 次，
     // 之后每 48 分钟回一个（一天约 30 次）。只防刷，不探测任何东西，Redis 不可用时放行。动态配置 limits.tellomiReportSpam 可调。
     TELLOMI_REPORT_SPAM("tellomiReportSpam", new RateLimiterConfig(30, Duration.ofMinutes(48), true)),
+    // Tellomi（ADR-0066 §6.1；owner 2026-10-18 批准放宽这个账号）：发版闸的用户名探针账号（usernamePolicy.releaseProbeAccounts）
+    // 保留用户名、用 GET /v1/tellomi/username-probe/{hash} 查名都用这一个，按账号计，不再占 usernameReserve 和按 IP 的
+    // usernameLookup。一次探针约 21 次（查 10 次 + 保留 11 次），桶 200 ≈ 连跑 9 次，之后每 30 秒回一个（一小时约 6 次探针）。
+    // 查名能看出用户名有没有人占，所以 Redis 不可用时拒绝（failOpen = false）。动态配置 limits.tellomiUsernameProbe 可调。
+    TELLOMI_USERNAME_PROBE("tellomiUsernameProbe", new RateLimiterConfig(200, Duration.ofSeconds(30), false)),
     // Tellomi（审计 SF-4）：GET /v1/tellomi/feed/auth。按调用者账号计。客户端把凭证缓存到 `expires_at` 前 5 分钟，正常一个设备
     // 一小时取一次；这里只防「出错的客户端死循环反复取」。接口只是一次便宜的 HMAC、没有账号存在性探测，所以 Redis 不可用时
     // 放行（failOpen = true，不能因为限流器挂了让所有人拿不到动态凭证）。桶 60、每 1 分钟回一个（一小时约 60 次，

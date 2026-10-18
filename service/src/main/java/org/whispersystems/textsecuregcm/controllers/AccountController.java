@@ -68,6 +68,7 @@ import org.whispersystems.textsecuregcm.storage.UsernameHashNotAvailableExceptio
 import org.whispersystems.textsecuregcm.storage.UsernameReservationNotFoundException;
 import org.whispersystems.textsecuregcm.util.HeaderUtils;
 import org.whispersystems.textsecuregcm.metrics.MetricsUtil;
+import org.whispersystems.textsecuregcm.username.TellomiReleaseProbe;
 import org.whispersystems.textsecuregcm.username.UsernameHashDenylist;
 import org.whispersystems.textsecuregcm.util.UsernameHashZkProofVerifier;
 import org.whispersystems.textsecuregcm.util.Util;
@@ -90,6 +91,8 @@ public class AccountController {
   private final UsernameHashZkProofVerifier usernameHashZkProofVerifier;
   // Tellomi: reserved / brand / impersonation usernames (ADR-0062). Empty unless configured.
   private final UsernameHashDenylist usernameHashDenylist;
+  // Tellomi（ADR-0066 §6.1）：发版探针账号保留用户名时用自己的限流
+  private final TellomiReleaseProbe tellomiReleaseProbe;
 
   public AccountController(
       AccountsManager accounts,
@@ -97,11 +100,23 @@ public class AccountController {
       PhoneNumberRecoveryPasswordsManager phoneNumberRecoveryPasswordsManager,
       UsernameHashZkProofVerifier usernameHashZkProofVerifier,
       UsernameHashDenylist usernameHashDenylist) {
+    this(accounts, rateLimiters, phoneNumberRecoveryPasswordsManager, usernameHashZkProofVerifier, usernameHashDenylist,
+        TellomiReleaseProbe.NONE);
+  }
+
+  public AccountController(
+      AccountsManager accounts,
+      RateLimiters rateLimiters,
+      PhoneNumberRecoveryPasswordsManager phoneNumberRecoveryPasswordsManager,
+      UsernameHashZkProofVerifier usernameHashZkProofVerifier,
+      UsernameHashDenylist usernameHashDenylist,
+      TellomiReleaseProbe tellomiReleaseProbe) {
     this.accounts = accounts;
     this.rateLimiters = rateLimiters;
     this.phoneNumberRecoveryPasswordsManager = phoneNumberRecoveryPasswordsManager;
     this.usernameHashZkProofVerifier = usernameHashZkProofVerifier;
     this.usernameHashDenylist = usernameHashDenylist;
+    this.tellomiReleaseProbe = tellomiReleaseProbe;
   }
 
   @PUT
@@ -313,7 +328,12 @@ public class AccountController {
       @Auth final AuthenticatedDevice auth,
       @NotNull @Valid final ReserveUsernameHashRequest usernameRequest) throws RateLimitExceededException {
 
-    rateLimiters.getUsernameReserveLimiter().validate(auth.accountIdentifier());
+    // Tellomi（ADR-0066 §6.1）：发版探针账号用自己的限流（tellomiUsernameProbe），不占普通账号的 usernameReserve
+    if (tellomiReleaseProbe.isProbe(auth.accountIdentifier())) {
+      rateLimiters.forDescriptor(RateLimiters.For.TELLOMI_USERNAME_PROBE).validate(auth.accountIdentifier());
+    } else {
+      rateLimiters.getUsernameReserveLimiter().validate(auth.accountIdentifier());
+    }
 
     for (final byte[] hash : usernameRequest.usernameHashes()) {
       if (hash.length != USERNAME_HASH_LENGTH) {

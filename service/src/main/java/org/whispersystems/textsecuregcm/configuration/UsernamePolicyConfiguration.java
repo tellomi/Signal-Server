@@ -8,7 +8,10 @@ package org.whispersystems.textsecuregcm.configuration;
 import jakarta.annotation.Nullable;
 import jakarta.validation.constraints.NotBlank;
 import java.time.Duration;
+import java.util.Set;
+import java.util.UUID;
 import org.whispersystems.textsecuregcm.storage.AccountsManager;
+import org.whispersystems.textsecuregcm.username.TellomiReleaseProbe;
 
 /**
  * Tellomi: username rules that are ours rather than upstream's (ADR-0062 §5.4, ADR-0066).
@@ -23,15 +26,20 @@ import org.whispersystems.textsecuregcm.storage.AccountsManager;
  * @param renameCooldown how long after changing its username an account must wait before changing it again
  *                       (ISO-8601, e.g. {@code P180D}); absent = {@link AccountsManager#DEFAULT_USERNAME_CHANGE_COOLDOWN}.
  *                       This is not the old-name hold, which stays 30 days (Accounts#USERNAME_HOLD_DURATION).
+ * @param releaseProbeAccounts the ACIs of the release gate's username probe accounts (ADR-0066 §6.1): they reserve
+ *                       usernames under their own rate limit and may use {@code GET /v1/tellomi/username-probe/{hash}};
+ *                       absent = none ({@link TellomiReleaseProbe})
  */
 public record UsernamePolicyConfiguration(@NotBlank String denylistPath,
                                           boolean required,
-                                          @Nullable Duration renameCooldown) {
+                                          @Nullable Duration renameCooldown,
+                                          @Nullable Set<UUID> releaseProbeAccounts) {
 
   public UsernamePolicyConfiguration {
     if (renameCooldown == null) {
       renameCooldown = AccountsManager.DEFAULT_USERNAME_CHANGE_COOLDOWN;
     }
+    releaseProbeAccounts = releaseProbeAccounts == null ? Set.of() : Set.copyOf(releaseProbeAccounts);
     if (renameCooldown.isNegative()) {
       throw new IllegalArgumentException("usernamePolicy.renameCooldown must not be negative");
     }
@@ -40,5 +48,10 @@ public record UsernamePolicyConfiguration(@NotBlank String denylistPath,
   /// The rename cooldown for a server whose `usernamePolicy` block is `config` (null when there is none).
   public static Duration renameCooldown(@Nullable final UsernamePolicyConfiguration config) {
     return config == null ? AccountsManager.DEFAULT_USERNAME_CHANGE_COOLDOWN : config.renameCooldown();
+  }
+
+  /// The release probe accounts for a server whose `usernamePolicy` block is `config` (null when there is none).
+  public static TellomiReleaseProbe releaseProbe(@Nullable final UsernamePolicyConfiguration config) {
+    return config == null ? TellomiReleaseProbe.NONE : new TellomiReleaseProbe(config.releaseProbeAccounts());
   }
 }
