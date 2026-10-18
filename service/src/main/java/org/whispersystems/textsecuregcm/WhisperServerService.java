@@ -162,6 +162,7 @@ import org.whispersystems.textsecuregcm.controllers.SubscriptionController;
 import org.whispersystems.textsecuregcm.controllers.TellomiAccountDeletionController;
 import org.whispersystems.textsecuregcm.controllers.TellomiFeedController;
 import org.whispersystems.textsecuregcm.controllers.TellomiRestrictionController;
+import org.whispersystems.textsecuregcm.controllers.TellomiUsernameProbeController;
 import org.whispersystems.textsecuregcm.controllers.TellomiCaptchaController;
 import org.whispersystems.textsecuregcm.controllers.VerificationController;
 import org.whispersystems.textsecuregcm.currency.CoinGeckoClient;
@@ -343,6 +344,7 @@ import org.whispersystems.textsecuregcm.util.ManagedExecutors;
 import org.whispersystems.textsecuregcm.util.ResilienceUtil;
 import org.whispersystems.textsecuregcm.util.SystemMapper;
 import org.whispersystems.textsecuregcm.configuration.UsernamePolicyConfiguration;
+import org.whispersystems.textsecuregcm.username.TellomiReleaseProbe;
 import org.whispersystems.textsecuregcm.username.UsernameHashDenylist;
 import org.whispersystems.textsecuregcm.util.UsernameHashZkProofVerifier;
 import org.whispersystems.textsecuregcm.util.VirtualExecutorServiceProvider;
@@ -1238,6 +1240,13 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
     // Tellomi: reserved / brand / impersonation usernames (ADR-0062 §5.4). Absent config = upstream behaviour.
     // Loaded before the gRPC services: AccountsGrpcService.reserveUsernameHash must filter exactly like the REST endpoint.
     final UsernameHashDenylist usernameHashDenylist = loadUsernameHashDenylist(config.getUsernamePolicyConfiguration());
+    // Tellomi (ADR-0066 §6.1, owner 2026-10-18): the release gate's username probe accounts reserve and look up
+    // usernames under their own limiter (tellomiUsernameProbe). Absent config = none, every account as upstream.
+    final TellomiReleaseProbe tellomiReleaseProbe =
+        UsernamePolicyConfiguration.releaseProbe(config.getUsernamePolicyConfiguration());
+    if (tellomiReleaseProbe.size() > 0) {
+      log.info("{} release probe account(s) use the tellomiUsernameProbe rate limit", tellomiReleaseProbe.size());
+    }
 
     final List<ServerServiceDefinition> authenticatedServices = Stream.of(
             new AccountsGrpcService(accountsManager, rateLimiters, usernameHashZkProofVerifier,
@@ -1396,7 +1405,7 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
 
     final List<Object> commonControllers = Lists.newArrayList(
         new AccountController(accountsManager, rateLimiters, phoneNumberRecoveryPasswordsManager,
-            usernameHashZkProofVerifier, usernameHashDenylist),
+            usernameHashZkProofVerifier, usernameHashDenylist, tellomiReleaseProbe),
         new AccountControllerV2(accountsManager, changeNumberManager),
         new AttachmentControllerV4(rateLimiters, gcsAttachmentGenerator, tusAttachmentGenerator,
             experimentEnrollmentManager, config.getAttachments().maxAttachmentUploadSizeInBytes()),
@@ -1430,6 +1439,8 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         new TellomiAccountDeletionController(accountsManager, phoneVerificationTokenManager, rateLimiters),
         // Tellomi（ADR-0078 §3.4）：自己的账号现在有没有人工处置（客户端显示说明用）；没配名单时永远 204
         new TellomiRestrictionController(tellomiAccountRestrictions),
+        // Tellomi（ADR-0066 §6.1）：发版探针账号查用户名占没占 GET /v1/tellomi/username-probe/{hash}（别的账号 403）
+        new TellomiUsernameProbeController(accountsManager, rateLimiters, tellomiReleaseProbe),
         new SecureStorageController(storageCredentialsGenerator),
         new SecureValueRecovery2Controller(svr2CredentialsGenerator, accountsManager),
         new StickerController(rateLimiters, stickerPolicyGenerator, Clock.systemUTC()),
