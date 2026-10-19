@@ -8,6 +8,8 @@ package org.whispersystems.textsecuregcm.push;
 import static org.whispersystems.textsecuregcm.metrics.MetricsUtil.name;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.google.api.client.http.HttpTransport;
+import com.google.api.client.http.javanet.NetHttpTransport;
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
@@ -24,14 +26,18 @@ import io.micrometer.core.instrument.Timer;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.net.InetSocketAddress;
+import java.net.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ThreadFactory;
+import javax.annotation.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.whispersystems.textsecuregcm.configuration.FcmConfiguration;
 import org.whispersystems.textsecuregcm.util.ExceptionUtils;
 import org.whispersystems.textsecuregcm.util.GoogleApiUtil;
 import org.whispersystems.textsecuregcm.util.SystemMapper;
@@ -49,9 +55,28 @@ public class FcmSender implements PushNotificationSender {
   private static final Logger logger = LoggerFactory.getLogger(FcmSender.class);
 
   public FcmSender(ExecutorService executor, String credentials) throws IOException {
+    this(executor, credentials, null);
+  }
+
+  /**
+   * @param proxy Tellomi: optional HTTPS forward proxy used only by this FCM client (OAuth + send). TLS stays
+   *              end-to-end; the proxy only sees CONNECT host:port. {@code null} keeps upstream behavior.
+   */
+  public FcmSender(ExecutorService executor, String credentials, @Nullable FcmConfiguration.Proxy proxy)
+      throws IOException {
     try (final ByteArrayInputStream credentialInputStream = new ByteArrayInputStream(credentials.getBytes(StandardCharsets.UTF_8))) {
-      FirebaseApp.initializeApp(FirebaseOptions.builder()
-          .setCredentials(GoogleCredentials.fromStream(credentialInputStream))
+      final FirebaseOptions.Builder optionsBuilder = FirebaseOptions.builder();
+      final GoogleCredentials googleCredentials;
+      if (proxy == null) {
+        googleCredentials = GoogleCredentials.fromStream(credentialInputStream);
+      } else {
+        final HttpTransport transport = buildProxiedTransport(proxy);
+        googleCredentials = GoogleCredentials.fromStream(credentialInputStream, () -> transport);
+        optionsBuilder.setHttpTransport(transport);
+        logger.info("FCM client using HTTPS proxy {}:{}", proxy.host(), proxy.port());
+      }
+      FirebaseApp.initializeApp(optionsBuilder
+          .setCredentials(googleCredentials)
           .setThreadManager(new ThreadManager() {
             @Override
             protected ExecutorService getExecutor(final FirebaseApp app) {
@@ -75,6 +100,13 @@ public class FcmSender implements PushNotificationSender {
 
     this.executor = executor;
     this.firebaseMessagingClient = FirebaseMessaging.getInstance();
+  }
+
+  @VisibleForTesting
+  static HttpTransport buildProxiedTransport(final FcmConfiguration.Proxy proxy) {
+    return new NetHttpTransport.Builder()
+        .setProxy(new Proxy(Proxy.Type.HTTP, new InetSocketAddress(proxy.host(), proxy.port())))
+        .build();
   }
 
   @VisibleForTesting

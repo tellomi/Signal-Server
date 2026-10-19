@@ -128,4 +128,10 @@ class FcmSenderTest {
     verify(firebaseMessaging).sendAsync(any(Message.class));
     assertTrue(completionException.getCause() instanceof IOException);
   }
+
+  @Test
+  void proxiedTransportIsBuilt() {
+    org.junit.jupiter.api.Assertions.assertNotNull(FcmSender.buildProxiedTransport(
+        new org.whispersystems.textsecuregcm.configuration.FcmConfiguration.Proxy("127.0.0.1", 3128)));
+  }
 }

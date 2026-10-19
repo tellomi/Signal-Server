@@ -446,7 +446,8 @@ public record CommandDependencies(
         issuedReceiptsManager);
 
     APNSender apnSender = new APNSender(apnSenderExecutor, Clock.systemUTC(), configuration.getApnConfiguration());
-    FcmSender fcmSender = new FcmSender(fcmSenderExecutor, configuration.getFcmConfiguration().credentials().value());
+    FcmSender fcmSender = new FcmSender(fcmSenderExecutor, configuration.getFcmConfiguration().credentials().value(),
+        configuration.getFcmConfiguration().proxy());
     PushNotificationScheduler pushNotificationScheduler = new PushNotificationScheduler(pushSchedulerCluster,
         apnSender, fcmSender, accountsManager, 0, 0, retryExecutor);
     PushNotificationManager pushNotificationManager = new PushNotificationManager(accountsManager,

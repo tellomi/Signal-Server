@@ -861,7 +861,8 @@ public class WhisperServerService extends Application<WhisperServerConfiguration
         UsernamePolicyConfiguration.renameCooldown(config.getUsernamePolicyConfiguration()));
     RemoteConfigsManager remoteConfigsManager = new RemoteConfigsManager(remoteConfigs, config.getRemoteConfigConfiguration().globalConfig());
     APNSender apnSender = new APNSender(apnSenderExecutor, Clock.systemUTC(), config.getApnConfiguration());
-    FcmSender fcmSender = new FcmSender(fcmSenderExecutor, config.getFcmConfiguration().credentials().value());
+    FcmSender fcmSender = new FcmSender(fcmSenderExecutor, config.getFcmConfiguration().credentials().value(),
+        config.getFcmConfiguration().proxy());
     // Tellomi: 厂商推送（小米 / 华为，#941）；没配置的厂商 = 该类 token 视为未注册
     final VendorPushConfiguration vendorPushConfiguration = config.getVendorPushConfiguration();
     final VendorPushSenders vendorPushSenders = new VendorPushSenders(

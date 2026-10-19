@@ -279,6 +279,10 @@ apn: # Apple Push Notifications configuration
 
 fcm: # FCM configuration
   credentials: secret://fcm.credentials
+  # Tellomi, optional (default: absent = direct). HTTPS CONNECT proxy used ONLY by the FCM client:
+  # proxy:
+  #   host: 56.10.86.37
+  #   port: 3128
 
 cdn:
   bucket: cdn        # S3 Bucket name
