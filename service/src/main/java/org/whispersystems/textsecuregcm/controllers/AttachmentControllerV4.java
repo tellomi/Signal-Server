@@ -103,7 +103,9 @@ public class AttachmentControllerV4 {
       @Auth AuthenticatedDevice auth,
       @Parameter(description = "The size of the attachment to upload in bytes")
       @QueryParam("uploadLength") final @Valid Optional<@Positive Long> maybeUploadLength,
-      @HeaderParam(HttpHeaders.USER_AGENT) @Nullable final String userAgent)
+      @HeaderParam(HttpHeaders.USER_AGENT) @Nullable final String userAgent,
+      @Parameter(hidden = true) @HeaderParam("X-Forwarded-Host") @Nullable final String forwardedHost,
+      @Parameter(hidden = true) @HeaderParam(HttpHeaders.HOST) @Nullable final String host)
       throws RateLimitExceededException {
 
     final long uploadLength = maybeUploadLength.orElse(maxUploadLength);
@@ -132,7 +134,7 @@ public class AttachmentControllerV4 {
     final String key = AttachmentUtil.generateAttachmentKey(secureRandom);
     final boolean useCdn3 = this.experimentEnrollmentManager.isEnrolled(auth.accountIdentifier(), AttachmentUtil.CDN3_EXPERIMENT_NAME);
     int cdn = useCdn3 ? 3 : 2;
-    final AttachmentGenerator.Descriptor descriptor = this.attachmentGenerators.get(cdn).generateAttachment(key, uploadLength);
+    final AttachmentGenerator.Descriptor descriptor = this.attachmentGenerators.get(cdn).generateAttachment(key, uploadLength, forwardedHost, host);
     return new AttachmentDescriptorV3(cdn, key, descriptor.headers(), descriptor.signedUploadLocation());
   }
 

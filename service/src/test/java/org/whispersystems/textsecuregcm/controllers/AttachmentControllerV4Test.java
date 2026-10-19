@@ -183,6 +183,20 @@ class AttachmentControllerV4Test {
   }
 
   @Test
+  void testV4TusFormKeepsNonTellomiUploadHostForCnRequests() {
+    // Tellomi (REGION_PROFILE §6.2): the Host / X-Forwarded-Host headers reach the controller; a non-Tellomi upload
+    // URL is never rewritten (the swap itself is covered by TellomiRegionalHostTest).
+    AttachmentDescriptorV3 descriptor = resources.getJerseyTest()
+        .target("/v4/attachments/form/upload")
+        .queryParam("uploadLength", MAX_UPLOAD_LENGTH)
+        .request()
+        .header("Authorization", CDN3_ENABLED_CREDS)
+        .header("X-Forwarded-Host", "chat.tellomi.cn")
+        .get(AttachmentDescriptorV3.class);
+    assertThat(descriptor.signedUploadLocation()).isEqualTo(TUS_URL + "/" + "attachments");
+  }
+
+  @Test
   void testV4TusForm() {
     AttachmentDescriptorV3 descriptor = resources.getJerseyTest()
         .target("/v4/attachments/form/upload")
