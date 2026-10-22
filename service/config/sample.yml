@@ -279,9 +279,10 @@ apn: # Apple Push Notifications configuration
 
 fcm: # FCM configuration
   credentials: secret://fcm.credentials
-  # Tellomi, optional (default: absent = direct). HTTPS CONNECT proxy used ONLY by the FCM client:
+  # Tellomi, optional (default: absent = direct). HTTPS CONNECT proxy used ONLY by the FCM client.
+  # The real address is a deployment fact (deploy/hk/gen-config.py --fcm-proxy), not kept in the repo:
   # proxy:
-  #   host: 104.199.226.46
+  #   host: 203.0.113.10   # documentation address (RFC 5737)
   #   port: 3128
 
 cdn:
