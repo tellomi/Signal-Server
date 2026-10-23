@@ -391,12 +391,41 @@ class TellomiFeedControllerTest {
   }
 
   @Test
-  void removeFriendIsNotRateLimited() throws Exception {
-    // No account lookup, so no existence oracle: deliberately outside the limiter (decision recorded in the B-9 notes).
+  void removeFriendSpendsOnePermitFromTheFriendAssertionBucket() throws Exception {
     try (final Response response = request("/v1/tellomi/feed/friend-assertions/" + UUID.randomUUID()).delete()) {
       assertThat(response.getStatus()).isEqualTo(200);
     }
-    verifyNoInteractions(friendLimiter, audienceLimiter);
+    verify(friendLimiter, times(1)).validate(AuthHelper.VALID_UUID);
+    verifyNoInteractions(audienceLimiter);
+  }
+
+  @Test
+  void removeFriendRateLimitedIsTooManyRequestsAndSignsNothing() throws Exception {
+    doThrow(new RateLimitExceededException(Duration.ofSeconds(42))).when(friendLimiter).validate(any(UUID.class));
+
+    try (final Response response = request("/v1/tellomi/feed/friend-assertions/" + UUID.randomUUID()).delete()) {
+      assertThat(response.getStatus()).isEqualTo(429);
+      assertThat(response.getHeaderString("Retry-After")).isEqualTo("42");
+      assertThat(response.hasEntity() ? response.readEntity(String.class) : "").doesNotContain("assertion");
+    }
+  }
+
+  @Test
+  void malformedRemoveFriendStillCostsAPermit() throws Exception {
+    try (final Response response = request("/v1/tellomi/feed/friend-assertions/not-a-uuid").delete()) {
+      assertThat(response.getStatus()).isEqualTo(400);
+    }
+    verify(friendLimiter, times(1)).validate(AuthHelper.VALID_UUID);
+  }
+
+  @Test
+  void removeFriendLimiterStoreDownIsServiceUnavailable() throws Exception {
+    doThrow(new RuntimeException("redis down")).when(friendLimiter).validate(any(UUID.class));
+
+    try (final Response response = request("/v1/tellomi/feed/friend-assertions/" + UUID.randomUUID()).delete()) {
+      assertThat(response.getStatus()).isEqualTo(503);
+      assertThat(response.getHeaderString("Retry-After")).isNotNull();
+    }
   }
 
   @Test

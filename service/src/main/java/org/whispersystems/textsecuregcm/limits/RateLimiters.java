@@ -66,7 +66,7 @@ public class RateLimiters extends BaseRateLimiters<RateLimiters.For> {
     ONE_TIME_DONATION("oneTimeDonation", new RateLimiterConfig(5, Duration.ofMinutes(1), true)),
     ADD_SUBSCRIPTION_PAYMENT_METHOD("addSubscriptionPaymentMethod", new RateLimiterConfig(10, Duration.ofMinutes(1), true)),
     CHECK_MFA("checkMfa", new RateLimiterConfig(50, Duration.ofHours(12), false)),
-    // Tellomi（ADR-0071 §5.3，B-9）：POST /v1/tellomi/feed/friend-assertions。按调用者账号计；它能探测某个 ACI 有没有账号
+    // Tellomi（ADR-0071 §5.3，B-9）：POST /v1/tellomi/feed/friend-assertions 和 DELETE /friend-assertions/{peerAci}（共用一个桶）。按调用者账号计；它能探测某个 ACI 有没有账号
     // （404 / 200），所以 Redis 不可用时拒绝（failOpen = false）。首次同步最多约 500 个好友，所以桶是 600，之后每 6 秒回一个
     // （一小时约 600 次）。运行时可以用动态配置 limits.tellomiFeedFriendAssertion 调。
     TELLOMI_FEED_FRIEND_ASSERTION("tellomiFeedFriendAssertion", new RateLimiterConfig(600, Duration.ofSeconds(6), false)),

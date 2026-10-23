@@ -228,8 +228,15 @@ public class TellomiFeedController {
       description = "Works whether or not the peer's account still exists; the engine drops the whole link.")
   @ApiResponse(responseCode = "200", description = "The signed assertion", useReturnTypeSchema = true)
   @ApiResponse(responseCode = "400", description = "`peerAci` is not an ACI, or is the caller")
+  @ApiResponse(responseCode = "429", description = "Too many friend assertions from this account (shared with POST /friend-assertions)")
+  @ApiResponse(responseCode = "503", description = "The rate limiter's store is unavailable; nothing was signed. Retry-After says when to retry")
   public FriendAssertion removeFriend(@Auth final AuthenticatedDevice auth,
-      @Parameter(description = "The friend's ACI") @PathParam("peerAci") final String peerAci) {
+      @Parameter(description = "The friend's ACI") @PathParam("peerAci") final String peerAci)
+      throws RateLimitExceededException {
+
+    // 和 POST 共用同一个按账号的 tellomiFeedFriendAssertion 桶（600，每 6 秒补 1）：不查账号、没有探测问题，只防刷签名。
+    // 先限流再解析，格式错的请求也占名额（和 POST 一样）。
+    validateAccount("friendAssertionRemove", rateLimiters.getTellomiFeedFriendAssertionLimiter(), auth.accountIdentifier());
 
     final UUID peer = peer(auth, peerAci);
     return new FriendAssertion(tokens.friendAssertion(auth.accountIdentifier(), peer, "remove",

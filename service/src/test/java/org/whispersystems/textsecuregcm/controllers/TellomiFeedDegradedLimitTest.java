@@ -216,7 +216,7 @@ class TellomiFeedDegradedLimitTest {
   }
 
   @Test
-  void emptyTableDeleteStaysUnlimitedAndAuthKeepsOnlyItsPerAccountLimit() throws Exception {
+  void emptyTableDeleteUsesOnlyThePerAccountFriendBucketAndAuthKeepsOnlyItsPerAccountLimit() throws Exception {
     try (final Response response = request("/v1/tellomi/feed/friend-assertions/" + UUID.randomUUID()).delete()) {
       assertThat(response.getStatus()).isEqualTo(200);
     }
@@ -224,7 +224,9 @@ class TellomiFeedDegradedLimitTest {
     try (final Response response = request("/v1/tellomi/feed/auth").get()) {
       assertThat(response.getStatus()).isEqualTo(200);
     }
-    verifyNoInteractions(friendIpLimiter, audienceIpLimiter, friendLimiter, audienceLimiter);
+    // DELETE shares the per-account tellomiFeedFriendAssertion bucket (no per-IP layer, no account lookup)
+    verify(friendLimiter, times(1)).validate(AuthHelper.VALID_UUID);
+    verifyNoInteractions(friendIpLimiter, audienceIpLimiter, audienceLimiter);
     // SF-4: /auth has its own per-account limiter and, unlike the two routes above, no extra per-IP layer
     verify(authLimiter, times(1)).validate(AuthHelper.VALID_UUID);
   }
