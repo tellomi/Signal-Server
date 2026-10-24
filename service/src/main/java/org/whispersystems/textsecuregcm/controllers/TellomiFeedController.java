@@ -195,8 +195,10 @@ public class TellomiFeedController {
           after both have submitted their own half.
           """)
   @ApiResponse(responseCode = "200", description = "The signed assertion", useReturnTypeSchema = true)
+  @ApiResponse(responseCode = "401", description = "Account authentication check failed")
   @ApiResponse(responseCode = "400", description = "`peer_aci` is not an ACI, or is the caller")
   @ApiResponse(responseCode = "404", description = "No account has that ACI. The body is `{\"error\":\"account_not_found\"}`; a 404 without it means the route is not available on this server")
+  @ApiResponse(responseCode = "422", description = "The body is missing or `peer_aci` is blank")
   @ApiResponse(responseCode = "429", description = "Too many friend assertions from this account (or, while the ASN table is empty, from this address)")
   @ApiResponse(responseCode = "503", description = "The rate limiter's store is unavailable; nothing was signed. Retry-After says when to retry")
   public FriendAssertion addFriend(@Auth final AuthenticatedDevice auth,
@@ -227,6 +229,7 @@ public class TellomiFeedController {
   @Operation(summary = "Signs the withdrawal of a Tellomi friendship",
       description = "Works whether or not the peer's account still exists; the engine drops the whole link.")
   @ApiResponse(responseCode = "200", description = "The signed assertion", useReturnTypeSchema = true)
+  @ApiResponse(responseCode = "401", description = "Account authentication check failed")
   @ApiResponse(responseCode = "400", description = "`peerAci` is not an ACI, or is the caller")
   @ApiResponse(responseCode = "429", description = "Too many friend assertions from this account (shared with POST /friend-assertions)")
   @ApiResponse(responseCode = "503", description = "The rate limiter's store is unavailable; nothing was signed. Retry-After says when to retry")
@@ -253,6 +256,7 @@ public class TellomiFeedController {
           pseudonyms. Duplicates and the caller are dropped; at most 500 people.
           """)
   @ApiResponse(responseCode = "200", description = "The signed list", useReturnTypeSchema = true)
+  @ApiResponse(responseCode = "401", description = "Account authentication check failed")
   @ApiResponse(responseCode = "400", description = "An entry is not an ACI, or no one is left besides the caller")
   @ApiResponse(responseCode = "422", description = "Bad `kind`, or the list is empty or too long")
   @ApiResponse(responseCode = "429", description = "Too many audience lists from this account (or, while the ASN table is empty, from this address)")
